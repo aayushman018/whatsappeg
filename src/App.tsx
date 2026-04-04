@@ -4,7 +4,7 @@ import {
   BarChart3,
   CheckCircle2,
   Clock,
-  Lock,
+  Info,
   LogOut,
   Menu,
   MessageSquare,
@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { cn } from './lib/utils';
+import superCollectionsLogo from './assets/super-collections-logo.png';
 
 interface Message {
   id: string;
@@ -77,6 +78,45 @@ interface Conversation {
 }
 
 const DEFAULT_LABELS = ['', 'Lead', 'Customer', 'Spam', 'School'];
+
+const ONBOARDING_ITEMS = [
+  {
+    title: 'Connect And Capture',
+    text: 'All inbound WhatsApp messages are captured in one dashboard.',
+    hint: 'Webhook + WhatsApp Business API pushes every message here in real-time.',
+  },
+  {
+    title: 'AI Reply With Control',
+    text: 'AI can auto-reply, while team can override manually anytime.',
+    hint: 'Use manual reply box and per-contact AI toggle to take over critical chats.',
+  },
+  {
+    title: 'Lead Intelligence',
+    text: 'Each conversation gets summaries, priority tags, and lead scoring.',
+    hint: 'Priority keywords and lead score help you react fast to high-intent customers.',
+  },
+  {
+    title: 'Operations Visibility',
+    text: 'Analytics and reports help Super Collection track daily performance.',
+    hint: 'You get activity trends, peak hours, active contacts, and daily summaries.',
+  },
+];
+
+function InfoHint({ text }: { text: string }) {
+  return (
+    <span className="relative group inline-flex">
+      <button
+        type="button"
+        className="h-5 w-5 rounded-full border border-slate-300 text-slate-500 hover:bg-slate-100 flex items-center justify-center"
+      >
+        <Info size={12} />
+      </button>
+      <span className="pointer-events-none absolute z-20 -top-2 left-7 w-64 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-lg opacity-0 transition-opacity group-hover:opacity-100">
+        {text}
+      </span>
+    </span>
+  );
+}
 
 function normalizePhone(value: string): string {
   return value.replace(/\s+/g, '').trim();
@@ -415,8 +455,8 @@ export default function App() {
   const tabs = [
     { id: 'messages', label: 'Messages', icon: MessageSquare },
     { id: 'alerts', label: 'Priority Alerts', icon: AlertCircle, count: alerts.length },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-    { id: 'settings', label: 'AI Prompt', icon: Settings },
+    { id: 'analytics', label: 'Business Analytics', icon: BarChart3 },
+    { id: 'settings', label: 'Prompt Studio', icon: Settings },
   ] as const;
 
   if (!authChecked) {
@@ -440,11 +480,23 @@ export default function App() {
           animate={{ opacity: 1, y: 0 }}
           className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8"
         >
-          <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <Lock size={32} />
+          <div className="w-24 h-24 rounded-2xl overflow-hidden mx-auto mb-4 border border-slate-200 bg-white">
+            <img
+              src={superCollectionsLogo}
+              alt="Super Collection logo"
+              className="w-full h-full object-cover"
+            />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 mb-2 text-center">Admin Login</h1>
-          <p className="text-slate-500 mb-8 text-center">Sign in to access WhatsApp Intelligence.</p>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2 text-center">
+            Super Collection Whatsapp Intelligence
+          </h1>
+          <p className="text-slate-500 mb-6 text-center">
+            Super Collection&apos;s in-house developed WhatsApp Intelligence platform.
+          </p>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 mb-6">
+            Secure admin access for team monitoring, AI-assisted response, lead qualification, and
+            business analytics.
+          </div>
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-2">Email</label>
@@ -473,7 +525,7 @@ export default function App() {
             disabled={isLoggingIn}
             className="w-full mt-6 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-70 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
           >
-            {isLoggingIn ? 'Signing in...' : 'Sign in'}
+            {isLoggingIn ? 'Signing in...' : 'Sign in to Dashboard'}
           </button>
         </motion.form>
       </div>
@@ -490,13 +542,26 @@ export default function App() {
       >
         <div className="h-full flex flex-col">
           <div className="p-6 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-emerald-600 font-bold text-xl">
-              <MessageSquare size={24} />
-              <span>WA Intel</span>
+            <div className="flex items-center gap-3 min-w-0">
+              <img
+                src={superCollectionsLogo}
+                alt="Super Collection"
+                className="h-10 w-10 rounded-full object-cover border border-slate-200 shrink-0"
+              />
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-emerald-700 truncate">Super Collection</p>
+                <p className="text-[11px] text-slate-500 truncate">Whatsapp Intelligence</p>
+              </div>
             </div>
             <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400">
               <X size={20} />
             </button>
+          </div>
+          <div className="px-6 pb-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
+              In-house communication intelligence built for Super Collection operations, leads,
+              and customer support workflows.
+            </div>
           </div>
           <nav className="flex-1 px-4 space-y-2">
             {tabs.map((item) => (
@@ -552,9 +617,12 @@ export default function App() {
             <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden text-slate-500">
               <Menu size={24} />
             </button>
-            <h2 className="text-lg font-semibold text-slate-900">
-              {tabs.find((tab) => tab.id === activeTab)?.label ?? activeTab}
-            </h2>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">
+                {tabs.find((tab) => tab.id === activeTab)?.label ?? activeTab}
+              </h2>
+              <p className="text-[11px] text-slate-500">Super Collection Whatsapp Intelligence</p>
+            </div>
           </div>
           <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
             <Clock size={14} />
@@ -578,6 +646,37 @@ export default function App() {
                 exit={{ opacity: 0, x: -12 }}
                 className="max-w-7xl mx-auto space-y-4"
               >
+                <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-2xl p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-bold">Super Collection Whatsapp Intelligence</h3>
+                      <p className="text-emerald-50 text-sm mt-1">
+                        Super Collection&apos;s own in-house developed platform to manage WhatsApp
+                        communication, automate follow-ups, and scale lead handling.
+                      </p>
+                    </div>
+                    <img
+                      src={superCollectionsLogo}
+                      alt="Super Collection brand"
+                      className="h-14 w-14 rounded-full object-cover border border-white/30 bg-white/80 shrink-0"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                    {ONBOARDING_ITEMS.map((item) => (
+                      <div
+                        key={item.title}
+                        className="rounded-xl border border-white/20 bg-white/10 px-3 py-3"
+                      >
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold">{item.title}</p>
+                          <InfoHint text={item.hint} />
+                        </div>
+                        <p className="text-xs text-emerald-50 mt-1 leading-relaxed">{item.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="bg-white border border-slate-200 rounded-2xl p-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
                     <div className="relative xl:col-span-2">
@@ -870,6 +969,14 @@ export default function App() {
                   </div>
                 ) : (
                   <>
+                    <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-bold text-slate-900">
+                          Super Collection Operations Snapshot
+                        </p>
+                        <InfoHint text="Use this section to track message volume, response coverage, and peak contact windows for staffing and follow-ups." />
+                      </div>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       <div className="bg-white border border-slate-200 rounded-2xl p-4">
                         <p className="text-xs text-slate-500">Incoming</p>
@@ -961,9 +1068,13 @@ export default function App() {
               >
                 <div className="bg-white rounded-2xl border border-slate-200 p-8 space-y-6">
                   <div>
-                    <h3 className="text-lg font-bold text-slate-900 mb-1">AI Prompt</h3>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-lg font-bold text-slate-900">Prompt Studio</h3>
+                      <InfoHint text="This prompt controls how the AI writes replies, summaries, and lead-quality judgement. Keep instructions short, clear, and business-specific." />
+                    </div>
                     <p className="text-sm text-slate-500">
-                      Change only the prompt here. API keys and WhatsApp credentials stay on backend.
+                      Fine-tune Super Collection&apos;s AI behavior from here. Infrastructure credentials
+                      remain secured in backend environment variables.
                     </p>
                   </div>
                   <div>
