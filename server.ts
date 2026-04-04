@@ -88,6 +88,21 @@ type LoginAttemptRecord = {
   resetAt: number;
 };
 
+type GoogleSheetsSyncPayload = {
+  event: "message" | "lead";
+  ai_enabled?: boolean;
+  contact_label?: string;
+  contact_name?: string;
+  from: string;
+  importance_reason?: string;
+  is_priority?: boolean;
+  lead_score?: number;
+  message_id: string;
+  message_text: string;
+  timestamp: string;
+  to: string;
+};
+
 const sessionStore = new Map<string, SessionRecord>();
 const loginAttemptStore = new Map<string, LoginAttemptRecord>();
 
@@ -305,6 +320,30 @@ function sortMessagesNewestFirst(messages: StoredMessage[]): StoredMessage[] {
 
 function pruneMessages(messages: StoredMessage[]): StoredMessage[] {
   return sortMessagesNewestFirst(messages).slice(0, MAX_STORED_MESSAGES);
+}
+
+async function syncToGoogleSheets(payload: GoogleSheetsSyncPayload): Promise<void> {
+  const webhookUrl = process.env.GOOGLE_SHEETS_WEBHOOK_URL?.trim();
+  if (!webhookUrl) {
+    return;
+  }
+
+  try {
+    const secret = process.env.GOOGLE_SHEETS_WEBHOOK_SECRET?.trim();
+    await axios.post(
+      webhookUrl,
+      payload,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          ...(secret ? { "x-sheets-secret": secret } : {}),
+        },
+        timeout: 12000,
+      }
+    );
+  } catch (error) {
+    console.error("Google Sheets sync failed", error);
+  }
 }
 
 function getDateKey(date: Date, timeZone: string): string {
@@ -707,6 +746,25 @@ async function autoReplyToIncomingMessages(
       state.messages = pruneMessages(state.messages);
       await saveState(statePath, state);
       console.log(`Auto-replied to message ${incomingMessage.id}`);
+
+      if (aiResponse.lead_score >= runtimeSettings.leadNotifyThreshold) {
+        const contact = state.contacts[normalizePhone(incomingMessage.from)];
+        void syncToGoogleSheets({
+          event: "lead",
+          ai_enabled: contact?.ai_enabled ?? true,
+          contact_label: contact?.label ?? "",
+          contact_name: incomingMessage.contact_name,
+          from: incomingMessage.from,
+          importance_reason: aiResponse.importance_reason,
+          is_priority:
+            (incomingMessage.is_priority ?? false) || aiResponse.is_important,
+          lead_score: aiResponse.lead_score,
+          message_id: incomingMessage.id,
+          message_text: incomingMessage.text,
+          timestamp: incomingMessage.timestamp,
+          to: incomingMessage.to,
+        });
+      }
 
       if (
         runtimeSettings.personalPhone &&
@@ -1217,6 +1275,24 @@ async function startServer() {
       res.sendStatus(200);
 
       if (newlyStoredIncoming.length > 0) {
+        void Promise.all(
+          newlyStoredIncoming.map((message) => {
+            const contact = state.contacts[normalizePhone(message.from)];
+            return syncToGoogleSheets({
+              event: "message",
+              ai_enabled: contact?.ai_enabled ?? true,
+              contact_label: contact?.label ?? "",
+              contact_name: message.contact_name,
+              from: message.from,
+              is_priority: message.is_priority ?? false,
+              message_id: message.id,
+              message_text: message.text,
+              timestamp: message.timestamp,
+              to: message.to,
+            });
+          })
+        );
+
         const phoneId = ENV_PHONE_ID || state.settings.phone_id;
         const whatsappToken = ENV_WHATSAPP_TOKEN || state.settings.whatsapp_token;
         const personalPhone = ENV_PERSONAL_PHONE || state.settings.personal_phone;

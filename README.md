@@ -43,3 +43,17 @@ Set these to secure dashboard access:
 3. Optional: `SESSION_TTL_HOURS`
 
 All `/api/*` dashboard endpoints are now protected by session auth. Webhook endpoints remain public for Meta delivery.
+
+## Google Sheets Sync
+
+To auto-log every new inbound message and qualified leads to Google Sheets:
+
+1. Create a Google Apps Script Web App that accepts `POST` JSON and appends rows.
+2. Set:
+   1. `GOOGLE_SHEETS_WEBHOOK_URL`
+   2. Optional: `GOOGLE_SHEETS_WEBHOOK_SECRET` (validated in Apps Script via `x-sheets-secret` header)
+
+Sync behavior:
+
+1. Every new inbound message sends `event: "message"`.
+2. High-score leads send `event: "lead"` after AI scoring.
