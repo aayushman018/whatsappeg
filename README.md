@@ -32,4 +32,4 @@ Set these for automatic AI replies on inbound webhook messages:
 1. `WHATSAPP_TOKEN`
 2. `PHONE_ID`
 3. `GEMINI_API_KEY`
-4. Optional: `SYSTEM_PROMPT`, `WHATSAPP_API_VERSION`
+4. Optional: `SYSTEM_PROMPT`, `WHATSAPP_API_VERSION`, `GEMINI_MODEL` (default: `gemini-2.5-flash-lite`)

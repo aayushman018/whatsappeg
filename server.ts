@@ -16,6 +16,7 @@ type StoredMessage = {
     reply_to_user: string;
     summary: string;
   };
+  contact_name?: string;
   from: string;
   id: string;
   text: string;
@@ -147,6 +148,18 @@ function parseIncomingMessages(body: any, expectedBusinessId?: string): StoredMe
     for (const change of changes) {
       const value = change?.value;
       const metadata = value?.metadata ?? {};
+      const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
+      const contactNameByWaId = new Map<string, string>();
+      for (const contact of contacts) {
+        if (typeof contact?.wa_id !== "string") {
+          continue;
+        }
+        const profileName =
+          typeof contact?.profile?.name === "string" ? contact.profile.name.trim() : "";
+        if (profileName.length > 0) {
+          contactNameByWaId.set(contact.wa_id, profileName);
+        }
+      }
       const toNumber =
         typeof metadata?.display_phone_number === "string"
           ? metadata.display_phone_number
@@ -172,6 +185,7 @@ function parseIncomingMessages(body: any, expectedBusinessId?: string): StoredMe
 
         incoming.push({
           id: messageId,
+          contact_name: contactNameByWaId.get(message.from),
           from: message.from,
           to: toNumber,
           text: extractMessageText(message),
@@ -261,7 +275,7 @@ async function generateAiResponse(
 
   try {
     const ai = new GoogleGenAI({ apiKey });
-    const model = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+    const model = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash-lite";
 
     const response = await ai.models.generateContent({
       model,
