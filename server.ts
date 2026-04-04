@@ -1,5 +1,6 @@
 import express from "express";
 import axios from "axios";
+import crypto from "crypto";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
@@ -51,6 +52,139 @@ const DEFAULT_SETTINGS: AppSettings = {
 const MAX_STORED_MESSAGES = 1000;
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful WhatsApp assistant for a business. Reply briefly, clearly, and politely.";
+const SESSION_COOKIE_NAME = "waintel_session";
+const DEFAULT_SESSION_TTL_HOURS = 24 * 7;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 8;
+
+type SessionRecord = {
+  createdAt: number;
+  email: string;
+  expiresAt: number;
+};
+
+type LoginAttemptRecord = {
+  count: number;
+  resetAt: number;
+};
+
+const sessionStore = new Map<string, SessionRecord>();
+const loginAttemptStore = new Map<string, LoginAttemptRecord>();
+
+function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  if (!cookieHeader) {
+    return {};
+  }
+  const cookies: Record<string, string> = {};
+  for (const segment of cookieHeader.split(";")) {
+    const sep = segment.indexOf("=");
+    if (sep < 0) {
+      continue;
+    }
+    const key = segment.slice(0, sep).trim();
+    const value = segment.slice(sep + 1).trim();
+    if (!key) {
+      continue;
+    }
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch {
+      cookies[key] = value;
+    }
+  }
+  return cookies;
+}
+
+function getSessionTtlMs(): number {
+  const hoursRaw = Number(process.env.SESSION_TTL_HOURS);
+  const hours =
+    Number.isFinite(hoursRaw) && hoursRaw > 0 ? Math.min(hoursRaw, 24 * 30) : DEFAULT_SESSION_TTL_HOURS;
+  return Math.floor(hours * 60 * 60 * 1000);
+}
+
+function createSession(email: string): string {
+  const token = crypto.randomBytes(32).toString("hex");
+  const now = Date.now();
+  sessionStore.set(token, {
+    email,
+    createdAt: now,
+    expiresAt: now + getSessionTtlMs(),
+  });
+  return token;
+}
+
+function getSessionFromRequest(req: express.Request): SessionRecord | null {
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME];
+  if (!token) {
+    return null;
+  }
+  const session = sessionStore.get(token);
+  if (!session) {
+    return null;
+  }
+  if (session.expiresAt <= Date.now()) {
+    sessionStore.delete(token);
+    return null;
+  }
+  return session;
+}
+
+function clearSessionFromRequest(req: express.Request): void {
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME];
+  if (token) {
+    sessionStore.delete(token);
+  }
+}
+
+function getClientKey(req: express.Request): string {
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function isLoginRateLimited(clientKey: string): { limited: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const record = loginAttemptStore.get(clientKey);
+  if (!record) {
+    return { limited: false, retryAfterSec: 0 };
+  }
+  if (now > record.resetAt) {
+    loginAttemptStore.delete(clientKey);
+    return { limited: false, retryAfterSec: 0 };
+  }
+  if (record.count < LOGIN_MAX_ATTEMPTS) {
+    return { limited: false, retryAfterSec: 0 };
+  }
+  return {
+    limited: true,
+    retryAfterSec: Math.ceil((record.resetAt - now) / 1000),
+  };
+}
+
+function trackFailedLogin(clientKey: string): void {
+  const now = Date.now();
+  const current = loginAttemptStore.get(clientKey);
+  if (!current || now > current.resetAt) {
+    loginAttemptStore.set(clientKey, {
+      count: 1,
+      resetAt: now + LOGIN_WINDOW_MS,
+    });
+    return;
+  }
+  current.count += 1;
+  loginAttemptStore.set(clientKey, current);
+}
+
+function clearFailedLogin(clientKey: string): void {
+  loginAttemptStore.delete(clientKey);
+}
+
+function secureEquals(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, "utf-8");
+  const bBuf = Buffer.from(b, "utf-8");
+  if (aBuf.length !== bBuf.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
 
 function getDataDir(): string {
   const configured = process.env.DATA_DIR?.trim();
@@ -384,6 +518,23 @@ async function autoReplyToIncomingMessages(
         runtimeSettings.whatsappToken
       );
 
+      const outgoingId = `${incomingMessage.id}:reply`;
+      const outgoingMessage: StoredMessage = {
+        id: outgoingId,
+        from: incomingMessage.from,
+        to: incomingMessage.to,
+        contact_name: incomingMessage.contact_name,
+        text: aiResponse.reply_to_user,
+        timestamp: new Date().toISOString(),
+        type: "outgoing",
+      };
+      const outgoingIdx = state.messages.findIndex((m) => m.id === outgoingId);
+      if (outgoingIdx >= 0) {
+        state.messages[outgoingIdx] = { ...state.messages[outgoingIdx], ...outgoingMessage };
+      } else {
+        state.messages.push(outgoingMessage);
+      }
+
       const idx = state.messages.findIndex((m) => m.id === incomingMessage.id);
       if (idx >= 0) {
         state.messages[idx] = {
@@ -408,15 +559,106 @@ async function startServer() {
   const ENV_WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN?.trim();
   const ENV_PHONE_ID = process.env.PHONE_ID?.trim();
   const ENV_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT?.trim();
+  const ENV_ADMIN_EMAIL = process.env.ADMIN_EMAIL?.trim() || "admin";
+  const ENV_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || "change-me-now";
   const { state, statePath } = await initializeState();
 
+  if (ENV_ADMIN_PASSWORD === "change-me-now") {
+    console.warn("Using default ADMIN_PASSWORD. Set a strong ADMIN_PASSWORD in environment variables.");
+  }
+
+  setInterval(() => {
+    const now = Date.now();
+    for (const [token, session] of sessionStore.entries()) {
+      if (session.expiresAt <= now) {
+        sessionStore.delete(token);
+      }
+    }
+    for (const [clientKey, attempts] of loginAttemptStore.entries()) {
+      if (attempts.resetAt <= now) {
+        loginAttemptStore.delete(clientKey);
+      }
+    }
+  }, 60 * 1000).unref();
+
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "2mb" }));
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+    if ((req.headers["x-forwarded-proto"] || "").toString().includes("https")) {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    next();
+  });
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", time: new Date().toISOString() });
   });
 
-  app.get("/api/messages", (req, res) => {
+  app.get("/auth/me", (req, res) => {
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      return res.json({ authenticated: false });
+    }
+    return res.json({ authenticated: true, email: session.email });
+  });
+
+  app.post("/auth/login", (req, res) => {
+    const clientKey = getClientKey(req);
+    const limited = isLoginRateLimited(clientKey);
+    if (limited.limited) {
+      return res.status(429).json({
+        ok: false,
+        error: `Too many login attempts. Try again in ${limited.retryAfterSec}s.`,
+      });
+    }
+
+    const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    const valid =
+      secureEquals(email, ENV_ADMIN_EMAIL) && secureEquals(password, ENV_ADMIN_PASSWORD);
+
+    if (!valid) {
+      trackFailedLogin(clientKey);
+      return res.status(401).json({ ok: false, error: "Invalid credentials" });
+    }
+
+    clearFailedLogin(clientKey);
+    const sessionToken = createSession(email);
+    res.cookie(SESSION_COOKIE_NAME, sessionToken, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: getSessionTtlMs(),
+      path: "/",
+    });
+    return res.json({ ok: true, email });
+  });
+
+  app.post("/auth/logout", (req, res) => {
+    clearSessionFromRequest(req);
+    res.cookie(SESSION_COOKIE_NAME, "", {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+      expires: new Date(0),
+      path: "/",
+    });
+    return res.json({ ok: true });
+  });
+
+  const requireAuth: express.RequestHandler = (req, res, next) => {
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+    next();
+  };
+
+  app.get("/api/messages", requireAuth, (req, res) => {
     const limitRaw = Number(req.query.limit);
     const count = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 50;
 
@@ -424,11 +666,11 @@ async function startServer() {
     res.json(sorted.slice(0, count));
   });
 
-  app.get("/api/settings", (_req, res) => {
+  app.get("/api/settings", requireAuth, (_req, res) => {
     res.json(state.settings);
   });
 
-  app.put("/api/settings", async (req, res) => {
+  app.put("/api/settings", requireAuth, async (req, res) => {
     try {
       const payload = req.body ?? {};
       state.settings = {

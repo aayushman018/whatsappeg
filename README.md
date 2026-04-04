@@ -33,3 +33,13 @@ Set these for automatic AI replies on inbound webhook messages:
 2. `PHONE_ID`
 3. `GEMINI_API_KEY`
 4. Optional: `SYSTEM_PROMPT`, `WHATSAPP_API_VERSION`, `GEMINI_MODEL` (default: `gemini-2.5-flash-lite`)
+
+## Admin Login And Security
+
+Set these to secure dashboard access:
+
+1. `ADMIN_EMAIL`
+2. `ADMIN_PASSWORD`
+3. Optional: `SESSION_TTL_HOURS`
+
+All `/api/*` dashboard endpoints are now protected by session auth. Webhook endpoints remain public for Meta delivery.

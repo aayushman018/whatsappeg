@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import {
-  MessageSquare,
-  Settings,
   AlertCircle,
-  Send,
-  User,
   CheckCircle2,
   Clock,
-  ShieldAlert,
+  Lock,
+  LogOut,
   Menu,
+  MessageSquare,
+  Send,
+  Settings,
+  ShieldAlert,
+  User,
   X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -32,11 +34,6 @@ interface Message {
 
 interface AppSettings {
   system_prompt: string;
-  whatsapp_token?: string;
-  phone_id?: string;
-  whatsapp_business_id?: string;
-  personal_phone?: string;
-  verify_token?: string;
 }
 
 interface Conversation {
@@ -57,13 +54,53 @@ export default function App() {
   const [selectedConversationPhone, setSelectedConversationPhone] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
   useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const resp = await fetch('/auth/me', { method: 'GET' });
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = (await resp.json()) as { authenticated: boolean; email?: string };
+        setIsAuthenticated(Boolean(data.authenticated));
+        setSessionEmail(data.email ?? null);
+      } catch (error) {
+        console.error('Failed auth check', error);
+        setIsAuthenticated(false);
+        setSessionEmail(null);
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+
+    void checkAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setMessages([]);
+      return;
+    }
+
     let cancelled = false;
 
     const fetchMessages = async () => {
       try {
         const resp = await fetch('/api/messages?limit=200');
         if (!resp.ok) {
+          if (resp.status === 401) {
+            setIsAuthenticated(false);
+            setSessionEmail(null);
+            return;
+          }
           throw new Error(`HTTP ${resp.status}`);
         }
         const data = (await resp.json()) as Message[];
@@ -83,11 +120,16 @@ export default function App() {
       try {
         const resp = await fetch('/api/settings');
         if (!resp.ok) {
+          if (resp.status === 401) {
+            setIsAuthenticated(false);
+            setSessionEmail(null);
+            return;
+          }
           throw new Error(`HTTP ${resp.status}`);
         }
         const data = (await resp.json()) as AppSettings;
         if (!cancelled) {
-          setSettings(data);
+          setSettings({ system_prompt: data.system_prompt ?? '' });
           setApiError(null);
         }
       } catch (error) {
@@ -100,6 +142,7 @@ export default function App() {
 
     void fetchSettings();
     void fetchMessages();
+
     const pollId = window.setInterval(() => {
       void fetchMessages();
     }, 5000);
@@ -108,7 +151,52 @@ export default function App() {
       cancelled = true;
       window.clearInterval(pollId);
     };
-  }, []);
+  }, [isAuthenticated]);
+
+  const handleLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError(null);
+
+    try {
+      const resp = await fetch('/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: loginEmail,
+          password: loginPassword,
+        }),
+      });
+
+      const payload = (await resp.json()) as { ok?: boolean; error?: string; email?: string };
+      if (!resp.ok || !payload.ok) {
+        throw new Error(payload.error || `HTTP ${resp.status}`);
+      }
+
+      setIsAuthenticated(true);
+      setSessionEmail(payload.email ?? loginEmail);
+      setLoginPassword('');
+      setLoginError(null);
+    } catch (error) {
+      console.error('Login failed', error);
+      setLoginError(error instanceof Error ? error.message : 'Login failed');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/auth/logout', { method: 'POST' });
+    } catch (error) {
+      console.error('Logout failed', error);
+    }
+    setIsAuthenticated(false);
+    setSessionEmail(null);
+    setMessages([]);
+  };
 
   const saveSettings = async () => {
     try {
@@ -121,9 +209,16 @@ export default function App() {
           system_prompt: settings.system_prompt,
         }),
       });
+
       if (!resp.ok) {
+        if (resp.status === 401) {
+          setIsAuthenticated(false);
+          setSessionEmail(null);
+          return;
+        }
         throw new Error(`HTTP ${resp.status}`);
       }
+
       alert('Prompt saved successfully!');
       setApiError(null);
     } catch (error) {
@@ -197,6 +292,72 @@ export default function App() {
 
   const activeTabLabel = tabs.find((tab) => tab.id === activeTab)?.label ?? activeTab;
 
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+          className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full"
+        />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <motion.form
+          onSubmit={handleLogin}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8"
+        >
+          <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Lock size={32} />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2 text-center">Admin Login</h1>
+          <p className="text-slate-500 mb-8 text-center">Sign in to access WhatsApp Intelligence.</p>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-2">Email</label>
+              <input
+                type="text"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                placeholder="admin"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-2">Password</label>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                placeholder="Your secure password"
+                required
+              />
+            </div>
+          </div>
+
+          {loginError && <p className="text-sm text-rose-600 mt-4">{loginError}</p>}
+
+          <button
+            type="submit"
+            disabled={isLoggingIn}
+            className="w-full mt-6 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-70 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+          >
+            {isLoggingIn ? 'Signing in...' : 'Sign in'}
+          </button>
+        </motion.form>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex">
       <aside
@@ -250,10 +411,17 @@ export default function App() {
                 <User size={14} className="text-slate-500" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">Admin Panel</p>
-                <p className="text-xs text-slate-500 truncate">No login required</p>
+                <p className="text-sm font-medium text-slate-900 truncate">{sessionEmail || 'Admin'}</p>
+                <p className="text-xs text-slate-500 truncate">Authenticated session</p>
               </div>
             </div>
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-3 px-4 py-2 text-slate-500 hover:text-rose-600 transition-colors"
+            >
+              <LogOut size={18} />
+              <span className="text-sm font-medium">Sign Out</span>
+            </button>
           </div>
         </div>
       </aside>
@@ -355,7 +523,8 @@ export default function App() {
                                   <div className="text-xs text-slate-400 mb-3">
                                     {new Date(msg.timestamp).toLocaleString()}
                                   </div>
-                                  <div className="space-y-3">
+
+                                  {msg.type === 'incoming' ? (
                                     <div className="flex gap-3">
                                       <div className="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center shrink-0">
                                         <User size={16} className="text-slate-500" />
@@ -364,25 +533,25 @@ export default function App() {
                                         {msg.text}
                                       </div>
                                     </div>
-                                    {msg.ai_response && (
-                                      <div className="flex gap-3 justify-end">
-                                        <div className="flex flex-col items-end gap-2 max-w-[80%]">
-                                          <div className="bg-emerald-600 text-white rounded-2xl rounded-tr-none p-3 text-sm shadow-sm">
-                                            {msg.ai_response.reply_to_user}
-                                          </div>
-                                          <div className="flex items-center gap-2 text-[10px] text-slate-400 font-medium">
-                                            <CheckCircle2 size={10} className="text-emerald-500" />
-                                            AI Generated Response
-                                          </div>
+                                  ) : (
+                                    <div className="flex gap-3 justify-end">
+                                      <div className="flex flex-col items-end gap-2 max-w-[80%]">
+                                        <div className="bg-emerald-600 text-white rounded-2xl rounded-tr-none p-3 text-sm shadow-sm">
+                                          {msg.text}
                                         </div>
-                                        <div className="w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center shrink-0">
-                                          <MessageSquare size={16} className="text-emerald-600" />
+                                        <div className="flex items-center gap-2 text-[10px] text-slate-400 font-medium">
+                                          <CheckCircle2 size={10} className="text-emerald-500" />
+                                          AI Outgoing Message
                                         </div>
                                       </div>
-                                    )}
-                                  </div>
+                                      <div className="w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center shrink-0">
+                                        <MessageSquare size={16} className="text-emerald-600" />
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
-                                {msg.ai_response && (
+
+                                {msg.type === 'incoming' && msg.ai_response && (
                                   <div className="p-4 bg-slate-50 border-t border-slate-100">
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                       <div>
