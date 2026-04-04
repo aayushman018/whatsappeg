@@ -1,5 +1,7 @@
 import express from "express";
+import axios from "axios";
 import { mkdir, readFile, writeFile } from "fs/promises";
+import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -46,6 +48,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 const MAX_STORED_MESSAGES = 1000;
+const DEFAULT_SYSTEM_PROMPT =
+  "You are a helpful WhatsApp assistant for a business. Reply briefly, clearly, and politely.";
 
 function getDataDir(): string {
   const configured = process.env.DATA_DIR?.trim();
@@ -181,12 +185,215 @@ function parseIncomingMessages(body: any, expectedBusinessId?: string): StoredMe
   return incoming;
 }
 
+function stripCodeFences(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("```")) {
+    return trimmed;
+  }
+
+  const lines = trimmed.split("\n");
+  if (lines.length <= 2) {
+    return trimmed;
+  }
+  return lines.slice(1, -1).join("\n").trim();
+}
+
+function safeJsonParse<T>(raw: string): T | null {
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < 0 || end <= start) {
+    return null;
+  }
+  return text.slice(start, end + 1);
+}
+
+function normalizeAiResult(
+  parsed: Partial<NonNullable<StoredMessage["ai_response"]>> | null,
+  fallbackReply: string
+): NonNullable<StoredMessage["ai_response"]> {
+  const reply =
+    typeof parsed?.reply_to_user === "string" && parsed.reply_to_user.trim().length > 0
+      ? parsed.reply_to_user.trim()
+      : fallbackReply;
+  const isImportant = Boolean(parsed?.is_important);
+  const importanceReason =
+    typeof parsed?.importance_reason === "string" && parsed.importance_reason.trim().length > 0
+      ? parsed.importance_reason.trim()
+      : isImportant
+      ? "Marked important by AI"
+      : "No urgent signal detected";
+  const summary =
+    typeof parsed?.summary === "string" && parsed.summary.trim().length > 0
+      ? parsed.summary.trim()
+      : "Auto-generated reply";
+
+  return {
+    reply_to_user: reply,
+    is_important: isImportant,
+    importance_reason: importanceReason,
+    summary,
+  };
+}
+
+async function generateAiResponse(
+  incomingText: string,
+  systemPrompt: string
+): Promise<NonNullable<StoredMessage["ai_response"]>> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
+  const fallbackReply = "Thanks for your message. We received it and will get back to you shortly.";
+
+  if (!apiKey) {
+    return {
+      reply_to_user: fallbackReply,
+      is_important: false,
+      importance_reason: "GEMINI_API_KEY is missing; used fallback reply.",
+      summary: incomingText.slice(0, 140),
+    };
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const model = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+
+    const response = await ai.models.generateContent({
+      model,
+      contents:
+        [
+          "Return ONLY JSON object with keys:",
+          "reply_to_user (string),",
+          "is_important (boolean),",
+          "importance_reason (string),",
+          "summary (string).",
+          "",
+          `System prompt: ${systemPrompt || DEFAULT_SYSTEM_PROMPT}`,
+          `Incoming user message: ${incomingText}`,
+        ].join("\n"),
+    });
+
+    const text = (response.text ?? "").trim();
+    const withoutFence = stripCodeFences(text);
+    const parsedDirect = safeJsonParse<Partial<NonNullable<StoredMessage["ai_response"]>>>(withoutFence);
+    if (parsedDirect) {
+      return normalizeAiResult(parsedDirect, fallbackReply);
+    }
+
+    const extracted = extractFirstJsonObject(withoutFence);
+    if (extracted) {
+      const parsedExtracted = safeJsonParse<Partial<NonNullable<StoredMessage["ai_response"]>>>(
+        extracted
+      );
+      if (parsedExtracted) {
+        return normalizeAiResult(parsedExtracted, fallbackReply);
+      }
+    }
+
+    return normalizeAiResult(null, text || fallbackReply);
+  } catch (error) {
+    console.error("Failed to generate AI response", error);
+    return {
+      reply_to_user: fallbackReply,
+      is_important: false,
+      importance_reason: "AI generation failed; used fallback reply.",
+      summary: incomingText.slice(0, 140),
+    };
+  }
+}
+
+async function sendWhatsAppMessage(
+  to: string,
+  replyText: string,
+  phoneId: string,
+  whatsappToken: string
+): Promise<string | null> {
+  const apiVersion = process.env.WHATSAPP_API_VERSION?.trim() || "v20.0";
+  const endpoint = `https://graph.facebook.com/${apiVersion}/${phoneId}/messages`;
+
+  const resp = await axios.post(
+    endpoint,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: {
+        body: replyText,
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${whatsappToken}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 20000,
+    }
+  );
+
+  const sentId = resp.data?.messages?.[0]?.id;
+  return typeof sentId === "string" ? sentId : null;
+}
+
+async function autoReplyToIncomingMessages(
+  messagesToReply: StoredMessage[],
+  state: AppState,
+  statePath: string,
+  runtimeSettings: {
+    phoneId: string;
+    whatsappToken: string;
+    systemPrompt: string;
+  }
+): Promise<void> {
+  if (!runtimeSettings.whatsappToken || !runtimeSettings.phoneId) {
+    console.warn(
+      "Auto-reply skipped because whatsapp_token or phone_id is missing in settings/environment."
+    );
+    return;
+  }
+
+  for (const incomingMessage of messagesToReply) {
+    try {
+      const aiResponse = await generateAiResponse(
+        incomingMessage.text,
+        runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT
+      );
+
+      await sendWhatsAppMessage(
+        incomingMessage.from,
+        aiResponse.reply_to_user,
+        runtimeSettings.phoneId,
+        runtimeSettings.whatsappToken
+      );
+
+      const idx = state.messages.findIndex((m) => m.id === incomingMessage.id);
+      if (idx >= 0) {
+        state.messages[idx] = {
+          ...state.messages[idx],
+          ai_response: aiResponse,
+        };
+      }
+      await saveState(statePath, state);
+      console.log(`Auto-replied to message ${incomingMessage.id}`);
+    } catch (error) {
+      console.error(`Failed auto-reply for message ${incomingMessage.id}`, error);
+    }
+  }
+}
+
 async function startServer() {
   console.log("--- Simple Server Start ---");
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
   const ENV_VERIFY_TOKEN = process.env.VERIFY_TOKEN?.trim();
   const ENV_WHATSAPP_BUSINESS_ID = process.env.WHATSAPP_BUSINESS_ID?.trim();
+  const ENV_WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN?.trim();
+  const ENV_PHONE_ID = process.env.PHONE_ID?.trim();
+  const ENV_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT?.trim();
   const { state, statePath } = await initializeState();
 
   app.use(express.json({ limit: "2mb" }));
@@ -265,12 +472,14 @@ async function startServer() {
     }
 
     try {
+      const newlyStoredIncoming: StoredMessage[] = [];
       for (const message of incomingMessages) {
         const existingIndex = state.messages.findIndex((item) => item.id === message.id);
         if (existingIndex >= 0) {
           state.messages[existingIndex] = { ...state.messages[existingIndex], ...message };
         } else {
           state.messages.push(message);
+          newlyStoredIncoming.push(message);
         }
       }
       state.messages = state.messages
@@ -280,6 +489,15 @@ async function startServer() {
 
       console.log(`Stored ${incomingMessages.length} incoming WhatsApp message(s)`);
       res.sendStatus(200);
+
+      if (newlyStoredIncoming.length > 0) {
+        const runtimeSettings = {
+          whatsappToken: ENV_WHATSAPP_TOKEN || state.settings.whatsapp_token,
+          phoneId: ENV_PHONE_ID || state.settings.phone_id,
+          systemPrompt: ENV_SYSTEM_PROMPT || state.settings.system_prompt,
+        };
+        void autoReplyToIncomingMessages(newlyStoredIncoming, state, statePath, runtimeSettings);
+      }
     } catch (error) {
       console.error("Failed to store incoming WhatsApp messages", error);
       res.sendStatus(500);

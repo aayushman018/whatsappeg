@@ -24,3 +24,12 @@ View your app in AI Studio: https://ai.studio/apps/1e337cdb-9b6d-400a-9986-3f6ec
 This app now uses local JSON persistence via `DATA_DIR` (default `./data/state.json`) and no Firebase dependencies.
 
 For production reliability on Render, prefer a managed database (Render Postgres) instead of local disk because local files are ephemeral on restarts/deploys.
+
+## Auto Reply Requirements
+
+Set these for automatic AI replies on inbound webhook messages:
+
+1. `WHATSAPP_TOKEN`
+2. `PHONE_ID`
+3. `GEMINI_API_KEY`
+4. Optional: `SYSTEM_PROMPT`, `WHATSAPP_API_VERSION`
