@@ -1,7 +1,5 @@
 import express from "express";
-import { readFile } from "fs/promises";
-import { cert, getApps, initializeApp, type ServiceAccount } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -9,63 +7,86 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-type NormalizedIncomingMessage = {
+type StoredMessage = {
+  ai_response?: {
+    importance_reason: string;
+    is_important: boolean;
+    reply_to_user: string;
+    summary: string;
+  };
   from: string;
   id: string;
   text: string;
   timestamp: string;
   to: string;
-  type: "incoming";
+  type: "incoming" | "outgoing";
 };
 
-function parseServiceAccountFromEnv(): ServiceAccount | null {
-  try {
-    const jsonRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
-    if (jsonRaw) {
-      return JSON.parse(jsonRaw) as ServiceAccount;
-    }
+type AppSettings = {
+  personal_phone: string;
+  phone_id: string;
+  system_prompt: string;
+  verify_token: string;
+  whatsapp_token: string;
+};
 
-    const base64Raw = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64?.trim();
-    if (base64Raw) {
-      const decoded = Buffer.from(base64Raw, "base64").toString("utf-8");
-      return JSON.parse(decoded) as ServiceAccount;
-    }
-  } catch (error) {
-    console.error("Failed to parse Firebase service account from env", error);
-  }
+type AppState = {
+  messages: StoredMessage[];
+  settings: AppSettings;
+};
 
-  return null;
+const DEFAULT_SETTINGS: AppSettings = {
+  system_prompt: "",
+  whatsapp_token: "",
+  phone_id: "",
+  personal_phone: "",
+  verify_token: "my_secret_token",
+};
+
+const MAX_STORED_MESSAGES = 1000;
+
+function getDataDir(): string {
+  const configured = process.env.DATA_DIR?.trim();
+  return configured ? path.resolve(configured) : path.resolve(__dirname, "data");
 }
 
-async function resolveFirestoreDatabaseId(): Promise<string | null> {
-  const fromEnv = process.env.FIRESTORE_DATABASE_ID?.trim();
-  if (fromEnv) {
-    return fromEnv;
-  }
-
+async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   try {
-    const configPath = path.resolve(__dirname, "firebase-applet-config.json");
-    const raw = await readFile(configPath, "utf-8");
-    const parsed = JSON.parse(raw) as { firestoreDatabaseId?: string };
-    return parsed.firestoreDatabaseId?.trim() || null;
+    const raw = await readFile(filePath, "utf-8");
+    return JSON.parse(raw) as T;
   } catch {
-    return null;
+    return fallback;
   }
 }
 
-async function createFirestoreAdminClient() {
-  if (getApps().length === 0) {
-    const serviceAccount = parseServiceAccountFromEnv();
-    if (serviceAccount) {
-      initializeApp({ credential: cert(serviceAccount) });
-    } else {
-      initializeApp();
-    }
-  }
+async function saveState(statePath: string, state: AppState): Promise<void> {
+  await writeFile(statePath, JSON.stringify(state, null, 2), "utf-8");
+}
 
-  const dbId = await resolveFirestoreDatabaseId();
-  const adminApp = getApps()[0];
-  return dbId ? getFirestore(adminApp, dbId) : getFirestore(adminApp);
+async function initializeState(): Promise<{ state: AppState; statePath: string }> {
+  const dataDir = getDataDir();
+  const statePath = path.join(dataDir, "state.json");
+
+  await mkdir(dataDir, { recursive: true });
+
+  const fallbackState: AppState = {
+    messages: [],
+    settings: DEFAULT_SETTINGS,
+  };
+  const persisted = await readJsonFile<Partial<AppState>>(statePath, {});
+
+  const state: AppState = {
+    messages: Array.isArray(persisted.messages)
+      ? (persisted.messages as StoredMessage[])
+      : fallbackState.messages,
+    settings: {
+      ...DEFAULT_SETTINGS,
+      ...(persisted.settings ?? {}),
+    },
+  };
+
+  await saveState(statePath, state);
+  return { state, statePath };
 }
 
 function extractMessageText(message: any): string {
@@ -102,8 +123,8 @@ function extractMessageText(message: any): string {
   return `[Unsupported message type: ${String(message?.type ?? "unknown")}]`;
 }
 
-function parseIncomingMessages(body: any): NormalizedIncomingMessage[] {
-  const incoming: NormalizedIncomingMessage[] = [];
+function parseIncomingMessages(body: any): StoredMessage[] {
+  const incoming: StoredMessage[] = [];
   const entries = Array.isArray(body?.entry) ? body.entry : [];
 
   for (const entry of entries) {
@@ -153,13 +174,43 @@ async function startServer() {
   console.log("--- Simple Server Start ---");
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN?.trim();
-  const adminDb = await createFirestoreAdminClient();
+  const ENV_VERIFY_TOKEN = process.env.VERIFY_TOKEN?.trim();
+  const { state, statePath } = await initializeState();
 
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", time: new Date().toISOString() });
+  });
+
+  app.get("/api/messages", (req, res) => {
+    const limitRaw = Number(req.query.limit);
+    const count = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 50;
+
+    const sorted = [...state.messages].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+    res.json(sorted.slice(0, count));
+  });
+
+  app.get("/api/settings", (_req, res) => {
+    res.json(state.settings);
+  });
+
+  app.put("/api/settings", async (req, res) => {
+    try {
+      const payload = req.body ?? {};
+      state.settings = {
+        system_prompt: typeof payload.system_prompt === "string" ? payload.system_prompt : state.settings.system_prompt,
+        whatsapp_token: typeof payload.whatsapp_token === "string" ? payload.whatsapp_token : state.settings.whatsapp_token,
+        phone_id: typeof payload.phone_id === "string" ? payload.phone_id : state.settings.phone_id,
+        personal_phone: typeof payload.personal_phone === "string" ? payload.personal_phone : state.settings.personal_phone,
+        verify_token: typeof payload.verify_token === "string" ? payload.verify_token : state.settings.verify_token,
+      };
+      await saveState(statePath, state);
+      res.json({ ok: true, settings: state.settings });
+    } catch (error) {
+      console.error("Failed to save settings", error);
+      res.status(500).json({ ok: false, error: "Failed to save settings" });
+    }
   });
 
   app.get("/webhook", (req, res) => {
@@ -169,10 +220,11 @@ async function startServer() {
 
     const isSubscribeRequest = mode === "subscribe";
     const hasChallenge = typeof challenge === "string" && challenge.length > 0;
+    const effectiveVerifyToken = ENV_VERIFY_TOKEN || state.settings.verify_token;
     const tokenMatches =
       typeof token === "string" &&
       token.length > 0 &&
-      (!VERIFY_TOKEN || token === VERIFY_TOKEN);
+      (!effectiveVerifyToken || token === effectiveVerifyToken);
 
     if (isSubscribeRequest && hasChallenge && tokenMatches) {
       return res.status(200).send(challenge);
@@ -181,7 +233,7 @@ async function startServer() {
     return res.status(403).send("Forbidden");
   });
 
-  app.post("/webhook", (req, res) => {
+  app.post("/webhook", async (req, res) => {
     const incomingMessages = parseIncomingMessages(req.body);
 
     if (incomingMessages.length === 0) {
@@ -189,19 +241,26 @@ async function startServer() {
       return res.sendStatus(200);
     }
 
-    Promise.all(
-      incomingMessages.map((message) =>
-        adminDb.collection("messages").doc(message.id).set(message, { merge: true })
-      )
-    )
-      .then(() => {
-        console.log(`Stored ${incomingMessages.length} incoming WhatsApp message(s)`);
-        res.sendStatus(200);
-      })
-      .catch((error) => {
-        console.error("Failed to store incoming WhatsApp messages", error);
-        res.sendStatus(500);
-      });
+    try {
+      for (const message of incomingMessages) {
+        const existingIndex = state.messages.findIndex((item) => item.id === message.id);
+        if (existingIndex >= 0) {
+          state.messages[existingIndex] = { ...state.messages[existingIndex], ...message };
+        } else {
+          state.messages.push(message);
+        }
+      }
+      state.messages = state.messages
+        .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
+        .slice(0, MAX_STORED_MESSAGES);
+      await saveState(statePath, state);
+
+      console.log(`Stored ${incomingMessages.length} incoming WhatsApp message(s)`);
+      res.sendStatus(200);
+    } catch (error) {
+      console.error("Failed to store incoming WhatsApp messages", error);
+      res.sendStatus(500);
+    }
   });
 
   const vite = await createViteServer({

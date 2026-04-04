@@ -19,10 +19,8 @@ View your app in AI Studio: https://ai.studio/apps/1e337cdb-9b6d-400a-9986-3f6ec
 3. Run the app:
    `npm run dev`
 
-## Render + Google Sign-In
+## Data Storage
 
-If Google sign-in fails on Render with an unauthorized domain error, add your Render host to Firebase:
+This app now uses local JSON persistence via `DATA_DIR` (default `./data/state.json`) and no Firebase dependencies.
 
-1. Open Firebase Console -> Authentication -> Settings -> Authorized domains
-2. Add your production domain (example: `whatsappeg.onrender.com`)
-3. Save and redeploy
+For production reliability on Render, prefer a managed database (Render Postgres) instead of local disk because local files are ephemeral on restarts/deploys.

@@ -12,17 +12,6 @@ import {
   X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  collection, 
-  query, 
-  orderBy, 
-  onSnapshot, 
-  doc, 
-  getDoc, 
-  setDoc,
-  limit
-} from 'firebase/firestore';
-import { db } from './firebase';
 import { cn } from './lib/utils';
 
 interface Message {
@@ -49,7 +38,7 @@ interface AppSettings {
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [dbError, setDbError] = useState<string | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     system_prompt: '',
     whatsapp_token: '',
@@ -61,43 +50,75 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
-    const q = query(collection(db, 'messages'), orderBy('timestamp', 'desc'), limit(50));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
-        setMessages(msgs);
-      },
-      (error) => {
+    let cancelled = false;
+
+    const fetchMessages = async () => {
+      try {
+        const resp = await fetch('/api/messages?limit=50');
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = (await resp.json()) as Message[];
+        if (!cancelled) {
+          setMessages(data);
+          setApiError(null);
+        }
+      } catch (error) {
         console.error('Failed to read messages', error);
-        setDbError('Database access blocked by Firestore rules. Update Firestore rules if you want no-login access.');
+        if (!cancelled) {
+          setApiError('Failed to load messages from server.');
+        }
       }
-    );
+    };
 
     const fetchSettings = async () => {
       try {
-        const docRef = doc(db, 'settings', 'global');
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setSettings(docSnap.data() as AppSettings);
+        const resp = await fetch('/api/settings');
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = (await resp.json()) as AppSettings;
+        if (!cancelled) {
+          setSettings(data);
+          setApiError(null);
         }
       } catch (error) {
         console.error('Failed to read settings', error);
-        setDbError('Database access blocked by Firestore rules. Update Firestore rules if you want no-login access.');
+        if (!cancelled) {
+          setApiError('Failed to load settings from server.');
+        }
       }
     };
-    fetchSettings();
 
-    return () => unsubscribe();
+    void fetchSettings();
+    void fetchMessages();
+    const pollId = window.setInterval(() => {
+      void fetchMessages();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(pollId);
+    };
   }, []);
 
   const saveSettings = async () => {
     try {
-      await setDoc(doc(db, 'settings', 'global'), settings);
+      const resp = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(settings),
+      });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
       alert("Settings saved successfully!");
+      setApiError(null);
     } catch (error) {
       console.error("Failed to save settings", error);
-      setDbError('Database write blocked by Firestore rules. Update Firestore rules if you want no-login access.');
+      setApiError('Failed to save settings to server.');
       alert("Failed to save settings. Check console for details.");
     }
   };
@@ -184,9 +205,9 @@ export default function App() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {dbError && (
+          {apiError && (
             <div className="max-w-4xl mx-auto mb-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm">
-              {dbError}
+              {apiError}
             </div>
           )}
           <AnimatePresence mode="wait">
