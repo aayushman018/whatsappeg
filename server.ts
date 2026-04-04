@@ -14,16 +14,26 @@ type StoredMessage = {
   ai_response?: {
     importance_reason: string;
     is_important: boolean;
+    lead_score: number;
     reply_to_user: string;
     summary: string;
   };
   contact_name?: string;
   from: string;
   id: string;
+  is_priority?: boolean;
+  priority_reasons?: string[];
+  reply_source?: "ai" | "manual";
   text: string;
   timestamp: string;
   to: string;
   type: "incoming" | "outgoing";
+};
+
+type ContactConfig = {
+  ai_enabled: boolean;
+  label: string;
+  last_contact_name?: string;
 };
 
 type AppSettings = {
@@ -36,6 +46,10 @@ type AppSettings = {
 };
 
 type AppState = {
+  contacts: Record<string, ContactConfig>;
+  meta?: {
+    last_daily_summary_date?: string;
+  };
   messages: StoredMessage[];
   settings: AppSettings;
 };
@@ -50,6 +64,12 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 const MAX_STORED_MESSAGES = 1000;
+const DEFAULT_CONTACT_CONFIG: ContactConfig = {
+  ai_enabled: true,
+  label: "",
+};
+const DEFAULT_PRIORITY_KEYWORDS = ["urgent", "price", "asap", "immediately", "emergency"];
+const DAILY_SUMMARY_TARGET_HOUR = 9;
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful WhatsApp assistant for a business. Reply briefly, clearly, and politely.";
 const SESSION_COOKIE_NAME = "waintel_session";
@@ -211,12 +231,18 @@ async function initializeState(): Promise<{ state: AppState; statePath: string }
   await mkdir(dataDir, { recursive: true });
 
   const fallbackState: AppState = {
+    contacts: {},
     messages: [],
     settings: DEFAULT_SETTINGS,
+    meta: {},
   };
   const persisted = await readJsonFile<Partial<AppState>>(statePath, {});
 
   const state: AppState = {
+    contacts:
+      persisted.contacts && typeof persisted.contacts === "object"
+        ? (persisted.contacts as Record<string, ContactConfig>)
+        : fallbackState.contacts,
     messages: Array.isArray(persisted.messages)
       ? (persisted.messages as StoredMessage[])
       : fallbackState.messages,
@@ -224,10 +250,96 @@ async function initializeState(): Promise<{ state: AppState; statePath: string }
       ...DEFAULT_SETTINGS,
       ...(persisted.settings ?? {}),
     },
+    meta:
+      persisted.meta && typeof persisted.meta === "object"
+        ? (persisted.meta as AppState["meta"])
+        : fallbackState.meta,
   };
 
   await saveState(statePath, state);
   return { state, statePath };
+}
+
+function normalizePhone(phone: string): string {
+  return phone.replace(/\s+/g, "").trim();
+}
+
+function getContactConfig(state: AppState, phone: string, contactName?: string): ContactConfig {
+  const key = normalizePhone(phone);
+  const existing = state.contacts[key];
+  if (existing) {
+    if (contactName && contactName.trim().length > 0 && existing.last_contact_name !== contactName.trim()) {
+      existing.last_contact_name = contactName.trim();
+    }
+    return existing;
+  }
+
+  const created: ContactConfig = {
+    ...DEFAULT_CONTACT_CONFIG,
+    ...(contactName && contactName.trim().length > 0 ? { last_contact_name: contactName.trim() } : {}),
+  };
+  state.contacts[key] = created;
+  return created;
+}
+
+function parsePriorityKeywords(): string[] {
+  const configured = process.env.PRIORITY_KEYWORDS?.trim();
+  if (!configured) {
+    return DEFAULT_PRIORITY_KEYWORDS;
+  }
+  const parsed = configured
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part.length > 0);
+  return parsed.length > 0 ? parsed : DEFAULT_PRIORITY_KEYWORDS;
+}
+
+function detectPriorityReasons(text: string, keywords: string[]): string[] {
+  const lowered = text.toLowerCase();
+  return keywords.filter((keyword) => lowered.includes(keyword));
+}
+
+function sortMessagesNewestFirst(messages: StoredMessage[]): StoredMessage[] {
+  return messages.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+}
+
+function pruneMessages(messages: StoredMessage[]): StoredMessage[] {
+  return sortMessagesNewestFirst(messages).slice(0, MAX_STORED_MESSAGES);
+}
+
+function getDateKey(date: Date, timeZone: string): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone,
+  });
+  return formatter.format(date);
+}
+
+function getHourMinuteInZone(date: Date, timeZone: string): { hour: number; minute: number } {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone,
+  });
+  const parts = formatter.formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
+  return { hour, minute };
+}
+
+function getYesterdayRangeInZone(now: Date, timeZone: string): { startMs: number; endMs: number } {
+  const dateKey = getDateKey(now, timeZone);
+  const [yearStr, monthStr, dayStr] = dateKey.split("-");
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const utcMidnight = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+  const endMs = utcMidnight;
+  const startMs = endMs - 24 * 60 * 60 * 1000;
+  return { startMs, endMs };
 }
 
 function extractMessageText(message: any): string {
@@ -363,6 +475,20 @@ function extractFirstJsonObject(text: string): string | null {
   return text.slice(start, end + 1);
 }
 
+function buildConversationMemory(messages: StoredMessage[], limit = 25): string {
+  if (messages.length === 0) {
+    return "No prior conversation history.";
+  }
+  const sorted = [...messages].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  const recent = sorted.slice(-limit);
+  return recent
+    .map((message) => {
+      const role = message.type === "incoming" ? "User" : "Assistant";
+      return `${role}: ${message.text}`;
+    })
+    .join("\n");
+}
+
 function normalizeAiResult(
   parsed: Partial<NonNullable<StoredMessage["ai_response"]>> | null,
   fallbackReply: string
@@ -382,18 +508,25 @@ function normalizeAiResult(
     typeof parsed?.summary === "string" && parsed.summary.trim().length > 0
       ? parsed.summary.trim()
       : "Auto-generated reply";
+  const parsedLeadScore = Number(parsed?.lead_score);
+  const leadScore =
+    Number.isFinite(parsedLeadScore) && parsedLeadScore >= 1 && parsedLeadScore <= 10
+      ? Math.round(parsedLeadScore)
+      : 5;
 
   return {
     reply_to_user: reply,
     is_important: isImportant,
     importance_reason: importanceReason,
+    lead_score: leadScore,
     summary,
   };
 }
 
 async function generateAiResponse(
   incomingText: string,
-  systemPrompt: string
+  systemPrompt: string,
+  conversationHistory: StoredMessage[]
 ): Promise<NonNullable<StoredMessage["ai_response"]>> {
   const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
   const fallbackReply = "Thanks for your message. We received it and will get back to you shortly.";
@@ -403,6 +536,7 @@ async function generateAiResponse(
       reply_to_user: fallbackReply,
       is_important: false,
       importance_reason: "GEMINI_API_KEY is missing; used fallback reply.",
+      lead_score: 5,
       summary: incomingText.slice(0, 140),
     };
   }
@@ -419,9 +553,14 @@ async function generateAiResponse(
           "reply_to_user (string),",
           "is_important (boolean),",
           "importance_reason (string),",
+          "lead_score (number 1-10),",
           "summary (string).",
           "",
           `System prompt: ${systemPrompt || DEFAULT_SYSTEM_PROMPT}`,
+          "",
+          "Recent conversation context (last 25 messages):",
+          buildConversationMemory(conversationHistory, 25),
+          "",
           `Incoming user message: ${incomingText}`,
         ].join("\n"),
     });
@@ -450,6 +589,7 @@ async function generateAiResponse(
       reply_to_user: fallbackReply,
       is_important: false,
       importance_reason: "AI generation failed; used fallback reply.",
+      lead_score: 5,
       summary: incomingText.slice(0, 140),
     };
   }
@@ -487,14 +627,25 @@ async function sendWhatsAppMessage(
   return typeof sentId === "string" ? sentId : null;
 }
 
+function upsertStoredMessage(state: AppState, message: StoredMessage): void {
+  const idx = state.messages.findIndex((existing) => existing.id === message.id);
+  if (idx >= 0) {
+    state.messages[idx] = { ...state.messages[idx], ...message };
+  } else {
+    state.messages.push(message);
+  }
+}
+
 async function autoReplyToIncomingMessages(
   messagesToReply: StoredMessage[],
   state: AppState,
   statePath: string,
   runtimeSettings: {
+    leadNotifyThreshold: number;
+    personalPhone: string;
     phoneId: string;
     whatsappToken: string;
-    systemPrompt: string;
+  systemPrompt: string;
   }
 ): Promise<void> {
   if (!runtimeSettings.whatsappToken || !runtimeSettings.phoneId) {
@@ -506,34 +657,45 @@ async function autoReplyToIncomingMessages(
 
   for (const incomingMessage of messagesToReply) {
     try {
+      const contactConfig = getContactConfig(
+        state,
+        incomingMessage.from,
+        incomingMessage.contact_name
+      );
+      if (!contactConfig.ai_enabled) {
+        continue;
+      }
+
+      const sameThreadMessages = state.messages.filter(
+        (message) => normalizePhone(message.from) === normalizePhone(incomingMessage.from)
+      );
       const aiResponse = await generateAiResponse(
         incomingMessage.text,
-        runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT
+        runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+        sameThreadMessages
       );
 
-      await sendWhatsAppMessage(
+      const sentId = await sendWhatsAppMessage(
         incomingMessage.from,
         aiResponse.reply_to_user,
         runtimeSettings.phoneId,
         runtimeSettings.whatsappToken
       );
 
-      const outgoingId = `${incomingMessage.id}:reply`;
+      const outgoingId = sentId || `${incomingMessage.id}:reply`;
       const outgoingMessage: StoredMessage = {
         id: outgoingId,
         from: incomingMessage.from,
         to: incomingMessage.to,
         contact_name: incomingMessage.contact_name,
+        is_priority: false,
+        priority_reasons: [],
+        reply_source: "ai",
         text: aiResponse.reply_to_user,
         timestamp: new Date().toISOString(),
         type: "outgoing",
       };
-      const outgoingIdx = state.messages.findIndex((m) => m.id === outgoingId);
-      if (outgoingIdx >= 0) {
-        state.messages[outgoingIdx] = { ...state.messages[outgoingIdx], ...outgoingMessage };
-      } else {
-        state.messages.push(outgoingMessage);
-      }
+      upsertStoredMessage(state, outgoingMessage);
 
       const idx = state.messages.findIndex((m) => m.id === incomingMessage.id);
       if (idx >= 0) {
@@ -542,12 +704,127 @@ async function autoReplyToIncomingMessages(
           ai_response: aiResponse,
         };
       }
+      state.messages = pruneMessages(state.messages);
       await saveState(statePath, state);
       console.log(`Auto-replied to message ${incomingMessage.id}`);
+
+      if (
+        runtimeSettings.personalPhone &&
+        aiResponse.lead_score >= runtimeSettings.leadNotifyThreshold &&
+        normalizePhone(runtimeSettings.personalPhone) !== normalizePhone(incomingMessage.from)
+      ) {
+        try {
+          const leadNote =
+            `High-intent lead alert (score ${aiResponse.lead_score}/10)\n` +
+            `Contact: ${incomingMessage.contact_name || incomingMessage.from}\n` +
+            `Message: ${incomingMessage.text}`;
+          await sendWhatsAppMessage(
+            runtimeSettings.personalPhone,
+            leadNote,
+            runtimeSettings.phoneId,
+            runtimeSettings.whatsappToken
+          );
+        } catch (notifyError) {
+          console.error(`Failed lead notification for message ${incomingMessage.id}`, notifyError);
+        }
+      }
     } catch (error) {
       console.error(`Failed auto-reply for message ${incomingMessage.id}`, error);
     }
   }
+}
+
+function getMessageDateKey(message: StoredMessage, timeZone: string): string {
+  const timestampMs = Date.parse(message.timestamp);
+  const messageDate = Number.isFinite(timestampMs) ? new Date(timestampMs) : new Date();
+  return getDateKey(messageDate, timeZone);
+}
+
+function getWeekKey(date: Date): string {
+  const firstDay = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const dayOfYear = Math.floor((date.getTime() - firstDay.getTime()) / 86400000) + 1;
+  const week = Math.ceil(dayOfYear / 7);
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+function buildAnalytics(state: AppState) {
+  const incoming = state.messages.filter((message) => message.type === "incoming");
+  const outgoing = state.messages.filter((message) => message.type === "outgoing");
+  const aiRepliedCount = incoming.filter((message) => Boolean(message.ai_response)).length;
+  const aiResponseRate = incoming.length > 0 ? aiRepliedCount / incoming.length : 0;
+
+  const perDay = new Map<string, number>();
+  const perWeek = new Map<string, number>();
+  const contactCount = new Map<string, number>();
+  const peakHours = Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 }));
+
+  for (const message of incoming) {
+    const parsedMs = Date.parse(message.timestamp);
+    const date = Number.isFinite(parsedMs) ? new Date(parsedMs) : new Date();
+    const dayKey = date.toISOString().slice(0, 10);
+    perDay.set(dayKey, (perDay.get(dayKey) ?? 0) + 1);
+
+    const weekKey = getWeekKey(date);
+    perWeek.set(weekKey, (perWeek.get(weekKey) ?? 0) + 1);
+
+    const contactKey = normalizePhone(message.from);
+    contactCount.set(contactKey, (contactCount.get(contactKey) ?? 0) + 1);
+
+    const hour = date.getUTCHours();
+    peakHours[hour].count += 1;
+  }
+
+  const mostActiveContacts = Array.from(contactCount.entries())
+    .map(([phone, count]) => ({
+      phone,
+      count,
+      label: state.contacts[phone]?.label || "",
+      name: state.contacts[phone]?.last_contact_name || phone,
+      ai_enabled: state.contacts[phone]?.ai_enabled ?? true,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  const dailyTotals = Array.from(perDay.entries())
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  const weeklyTotals = Array.from(perWeek.entries())
+    .map(([week, count]) => ({ week, count }))
+    .sort((a, b) => (a.week < b.week ? -1 : 1));
+
+  return {
+    ai_response_rate: aiResponseRate,
+    incoming_total: incoming.length,
+    outgoing_total: outgoing.length,
+    daily_totals: dailyTotals,
+    weekly_totals: weeklyTotals,
+    most_active_contacts: mostActiveContacts,
+    peak_hours_utc: peakHours,
+  };
+}
+
+function buildDailySummaryText(
+  state: AppState,
+  timeZone: string,
+  leadThreshold: number
+): string {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const yesterdayKey = getDateKey(yesterday, timeZone);
+  const yesterdayIncoming = state.messages.filter(
+    (message) =>
+      message.type === "incoming" && getMessageDateKey(message, timeZone) === yesterdayKey
+  );
+  const priorityCount = yesterdayIncoming.filter(
+    (message) => message.is_priority || message.ai_response?.is_important
+  ).length;
+  const leadSet = new Set(
+    yesterdayIncoming
+      .filter((message) => (message.ai_response?.lead_score ?? 0) >= leadThreshold)
+      .map((message) => normalizePhone(message.from))
+  );
+
+  return `Yesterday: ${yesterdayIncoming.length} messages, ${priorityCount} priority alerts, ${leadSet.size} new leads`;
 }
 
 async function startServer() {
@@ -559,6 +836,13 @@ async function startServer() {
   const ENV_WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN?.trim();
   const ENV_PHONE_ID = process.env.PHONE_ID?.trim();
   const ENV_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT?.trim();
+  const ENV_PERSONAL_PHONE = process.env.MY_PERSONAL_PHONE?.trim();
+  const ENV_SUMMARY_TIMEZONE = process.env.SUMMARY_TIMEZONE?.trim() || "Asia/Kolkata";
+  const ENV_LEAD_NOTIFY_THRESHOLD = Number(process.env.LEAD_NOTIFY_THRESHOLD ?? "8");
+  const leadNotifyThreshold =
+    Number.isFinite(ENV_LEAD_NOTIFY_THRESHOLD) && ENV_LEAD_NOTIFY_THRESHOLD >= 1
+      ? Math.min(Math.floor(ENV_LEAD_NOTIFY_THRESHOLD), 10)
+      : 8;
   const ENV_ADMIN_EMAIL = process.env.ADMIN_EMAIL?.trim() || "admin";
   const ENV_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || "change-me-now";
   const { state, statePath } = await initializeState();
@@ -566,6 +850,7 @@ async function startServer() {
   if (ENV_ADMIN_PASSWORD === "change-me-now") {
     console.warn("Using default ADMIN_PASSWORD. Set a strong ADMIN_PASSWORD in environment variables.");
   }
+  const priorityKeywords = parsePriorityKeywords();
 
   setInterval(() => {
     const now = Date.now();
@@ -579,6 +864,36 @@ async function startServer() {
         loginAttemptStore.delete(clientKey);
       }
     }
+  }, 60 * 1000).unref();
+
+  setInterval(() => {
+    const now = new Date();
+    const { hour, minute } = getHourMinuteInZone(now, ENV_SUMMARY_TIMEZONE);
+    if (hour !== DAILY_SUMMARY_TARGET_HOUR || minute !== 0) {
+      return;
+    }
+
+    const todayKey = getDateKey(now, ENV_SUMMARY_TIMEZONE);
+    if (state.meta?.last_daily_summary_date === todayKey) {
+      return;
+    }
+
+    const phoneId = ENV_PHONE_ID || state.settings.phone_id;
+    const whatsappToken = ENV_WHATSAPP_TOKEN || state.settings.whatsapp_token;
+    const personalPhone = ENV_PERSONAL_PHONE || state.settings.personal_phone;
+    if (!phoneId || !whatsappToken || !personalPhone) {
+      return;
+    }
+
+    const summaryText = buildDailySummaryText(state, ENV_SUMMARY_TIMEZONE, leadNotifyThreshold);
+    void sendWhatsAppMessage(personalPhone, summaryText, phoneId, whatsappToken)
+      .then(async () => {
+        state.meta = { ...(state.meta ?? {}), last_daily_summary_date: todayKey };
+        await saveState(statePath, state);
+      })
+      .catch((error) => {
+        console.error("Failed sending daily summary report", error);
+      });
   }, 60 * 1000).unref();
 
   app.set("trust proxy", 1);
@@ -660,35 +975,182 @@ async function startServer() {
 
   app.get("/api/messages", requireAuth, (req, res) => {
     const limitRaw = Number(req.query.limit);
-    const count = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 50;
+    const count =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 1000) : 200;
+    const query = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    const phone = typeof req.query.phone === "string" ? normalizePhone(req.query.phone) : "";
+    const labelFilter =
+      typeof req.query.label === "string" ? req.query.label.trim().toLowerCase() : "";
+    const fromRaw = typeof req.query.dateFrom === "string" ? req.query.dateFrom : "";
+    const toRaw = typeof req.query.dateTo === "string" ? req.query.dateTo : "";
+    const fromMs = Date.parse(fromRaw);
+    let toMs = Date.parse(toRaw);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(toRaw) && Number.isFinite(toMs)) {
+      toMs += 24 * 60 * 60 * 1000 - 1;
+    }
 
-    const sorted = [...state.messages].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+    const filtered = state.messages.filter((message) => {
+      const messageFrom = normalizePhone(message.from);
+      const messageTo = normalizePhone(message.to);
+      if (phone && messageFrom !== phone && messageTo !== phone) {
+        return false;
+      }
+
+      if (labelFilter) {
+        const label = state.contacts[messageFrom]?.label?.toLowerCase() ?? "";
+        if (label !== labelFilter) {
+          return false;
+        }
+      }
+
+      const messageTimestamp = Date.parse(message.timestamp);
+      if (Number.isFinite(fromMs) && (!Number.isFinite(messageTimestamp) || messageTimestamp < fromMs)) {
+        return false;
+      }
+      if (Number.isFinite(toMs) && (!Number.isFinite(messageTimestamp) || messageTimestamp > toMs)) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+      const textHaystack = [
+        message.text,
+        message.contact_name ?? "",
+        message.from,
+        message.to,
+        message.ai_response?.summary ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return textHaystack.includes(query);
+    });
+
+    const sorted = sortMessagesNewestFirst([...filtered]);
     res.json(sorted.slice(0, count));
   });
 
   app.get("/api/settings", requireAuth, (_req, res) => {
-    res.json(state.settings);
+    res.json({ system_prompt: state.settings.system_prompt });
   });
 
   app.put("/api/settings", requireAuth, async (req, res) => {
     try {
       const payload = req.body ?? {};
-      state.settings = {
-        system_prompt: typeof payload.system_prompt === "string" ? payload.system_prompt : state.settings.system_prompt,
-        whatsapp_token: typeof payload.whatsapp_token === "string" ? payload.whatsapp_token : state.settings.whatsapp_token,
-        phone_id: typeof payload.phone_id === "string" ? payload.phone_id : state.settings.phone_id,
-        whatsapp_business_id:
-          typeof payload.whatsapp_business_id === "string"
-            ? payload.whatsapp_business_id
-            : state.settings.whatsapp_business_id,
-        personal_phone: typeof payload.personal_phone === "string" ? payload.personal_phone : state.settings.personal_phone,
-        verify_token: typeof payload.verify_token === "string" ? payload.verify_token : state.settings.verify_token,
-      };
+      if (typeof payload.system_prompt === "string") {
+        state.settings.system_prompt = payload.system_prompt;
+      }
       await saveState(statePath, state);
-      res.json({ ok: true, settings: state.settings });
+      res.json({ ok: true, settings: { system_prompt: state.settings.system_prompt } });
     } catch (error) {
       console.error("Failed to save settings", error);
       res.status(500).json({ ok: false, error: "Failed to save settings" });
+    }
+  });
+
+  app.get("/api/contacts", requireAuth, (_req, res) => {
+    const byPhone = new Set<string>();
+    for (const message of state.messages) {
+      byPhone.add(normalizePhone(message.from));
+    }
+    for (const phone of Object.keys(state.contacts)) {
+      byPhone.add(normalizePhone(phone));
+    }
+
+    const contacts = Array.from(byPhone.values())
+      .filter((phone) => phone.length > 0)
+      .map((phone) => {
+        const config = getContactConfig(state, phone);
+        const related = state.messages.filter((message) => normalizePhone(message.from) === phone);
+        const latest = sortMessagesNewestFirst([...related])[0];
+        return {
+          phone,
+          ai_enabled: config.ai_enabled,
+          label: config.label,
+          name: config.last_contact_name || latest?.contact_name || phone,
+          last_timestamp: latest?.timestamp || null,
+          message_count: related.length,
+        };
+      })
+      .sort((a, b) => {
+        const aMs = a.last_timestamp ? Date.parse(a.last_timestamp) : 0;
+        const bMs = b.last_timestamp ? Date.parse(b.last_timestamp) : 0;
+        return bMs - aMs;
+      });
+
+    res.json(contacts);
+  });
+
+  app.patch("/api/contacts/:phone", requireAuth, async (req, res) => {
+    try {
+      const phone = normalizePhone(req.params.phone || "");
+      if (!phone) {
+        return res.status(400).json({ ok: false, error: "Phone is required" });
+      }
+      const payload = req.body ?? {};
+      const config = getContactConfig(state, phone);
+
+      if (typeof payload.ai_enabled === "boolean") {
+        config.ai_enabled = payload.ai_enabled;
+      }
+      if (typeof payload.label === "string") {
+        config.label = payload.label.trim();
+      }
+      if (typeof payload.name === "string" && payload.name.trim().length > 0) {
+        config.last_contact_name = payload.name.trim();
+      }
+
+      state.contacts[phone] = config;
+      await saveState(statePath, state);
+      return res.json({ ok: true, contact: { phone, ...config } });
+    } catch (error) {
+      console.error("Failed to update contact config", error);
+      return res.status(500).json({ ok: false, error: "Failed to update contact config" });
+    }
+  });
+
+  app.get("/api/analytics", requireAuth, (_req, res) => {
+    res.json(buildAnalytics(state));
+  });
+
+  app.post("/api/reply", requireAuth, async (req, res) => {
+    try {
+      const to = typeof req.body?.to === "string" ? normalizePhone(req.body.to) : "";
+      const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+      if (!to || !text) {
+        return res.status(400).json({ ok: false, error: "Both 'to' and 'text' are required." });
+      }
+
+      const phoneId = ENV_PHONE_ID || state.settings.phone_id;
+      const whatsappToken = ENV_WHATSAPP_TOKEN || state.settings.whatsapp_token;
+      if (!phoneId || !whatsappToken) {
+        return res.status(400).json({
+          ok: false,
+          error: "WhatsApp credentials are missing in environment variables.",
+        });
+      }
+
+      const sentId = await sendWhatsAppMessage(to, text, phoneId, whatsappToken);
+      const outgoingMessage: StoredMessage = {
+        id: sentId || `manual-${to}-${Date.now()}`,
+        from: to,
+        to: state.settings.phone_id || phoneId,
+        contact_name: state.contacts[to]?.last_contact_name,
+        is_priority: false,
+        priority_reasons: [],
+        reply_source: "manual",
+        text,
+        timestamp: new Date().toISOString(),
+        type: "outgoing",
+      };
+      upsertStoredMessage(state, outgoingMessage);
+      state.messages = pruneMessages(state.messages);
+      await saveState(statePath, state);
+
+      return res.json({ ok: true, message: outgoingMessage });
+    } catch (error) {
+      console.error("Failed sending manual reply", error);
+      return res.status(500).json({ ok: false, error: "Failed to send reply" });
     }
   });
 
@@ -730,26 +1192,59 @@ async function startServer() {
     try {
       const newlyStoredIncoming: StoredMessage[] = [];
       for (const message of incomingMessages) {
-        const existingIndex = state.messages.findIndex((item) => item.id === message.id);
-        if (existingIndex >= 0) {
-          state.messages[existingIndex] = { ...state.messages[existingIndex], ...message };
-        } else {
-          state.messages.push(message);
-          newlyStoredIncoming.push(message);
+        const contactConfig = getContactConfig(state, message.from, message.contact_name);
+        const priorityReasons = detectPriorityReasons(message.text, priorityKeywords);
+        const enrichedMessage: StoredMessage = {
+          ...message,
+          contact_name: message.contact_name || contactConfig.last_contact_name,
+          is_priority: priorityReasons.length > 0,
+          priority_reasons:
+            priorityReasons.length > 0
+              ? priorityReasons.map((keyword) => `Keyword match: ${keyword}`)
+              : [],
+        };
+
+        const existing = state.messages.find((item) => item.id === enrichedMessage.id);
+        upsertStoredMessage(state, enrichedMessage);
+        if (!existing) {
+          newlyStoredIncoming.push(enrichedMessage);
         }
       }
-      state.messages = state.messages
-        .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
-        .slice(0, MAX_STORED_MESSAGES);
+      state.messages = pruneMessages(state.messages);
       await saveState(statePath, state);
 
       console.log(`Stored ${incomingMessages.length} incoming WhatsApp message(s)`);
       res.sendStatus(200);
 
       if (newlyStoredIncoming.length > 0) {
+        const phoneId = ENV_PHONE_ID || state.settings.phone_id;
+        const whatsappToken = ENV_WHATSAPP_TOKEN || state.settings.whatsapp_token;
+        const personalPhone = ENV_PERSONAL_PHONE || state.settings.personal_phone;
+
+        if (phoneId && whatsappToken && personalPhone) {
+          const priorityMessages = newlyStoredIncoming.filter(
+            (message) => message.is_priority && (message.priority_reasons?.length ?? 0) > 0
+          );
+          for (const message of priorityMessages) {
+            if (normalizePhone(message.from) === normalizePhone(personalPhone)) {
+              continue;
+            }
+            const alertText =
+              `Priority keyword alert\n` +
+              `Contact: ${message.contact_name || message.from}\n` +
+              `Message: ${message.text}\n` +
+              `Reason: ${(message.priority_reasons ?? []).join(", ")}`;
+            void sendWhatsAppMessage(personalPhone, alertText, phoneId, whatsappToken).catch((error) => {
+              console.error("Failed sending priority alert", error);
+            });
+          }
+        }
+
         const runtimeSettings = {
-          whatsappToken: ENV_WHATSAPP_TOKEN || state.settings.whatsapp_token,
-          phoneId: ENV_PHONE_ID || state.settings.phone_id,
+          whatsappToken: whatsappToken || "",
+          phoneId: phoneId || "",
+          personalPhone: personalPhone || "",
+          leadNotifyThreshold,
           systemPrompt: ENV_SYSTEM_PROMPT || state.settings.system_prompt,
         };
         void autoReplyToIncomingMessages(newlyStoredIncoming, state, statePath, runtimeSettings);
