@@ -32,6 +32,7 @@ interface AppSettings {
   system_prompt: string;
   whatsapp_token: string;
   phone_id: string;
+  whatsapp_business_id: string;
   personal_phone: string;
   verify_token: string;
 }
@@ -43,6 +44,7 @@ export default function App() {
     system_prompt: '',
     whatsapp_token: '',
     phone_id: '',
+    whatsapp_business_id: '',
     personal_phone: '',
     verify_token: 'my_secret_token'
   });
@@ -379,6 +381,17 @@ export default function App() {
                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
                         />
                       </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-2">WhatsApp Business ID</label>
+                      <input 
+                        type="text"
+                        value={settings.whatsapp_business_id}
+                        onChange={(e) => setSettings({...settings, whatsapp_business_id: e.target.value})}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                        placeholder="1430995588186077"
+                      />
                     </div>
 
                     <div>

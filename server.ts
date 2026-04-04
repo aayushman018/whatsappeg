@@ -26,6 +26,7 @@ type AppSettings = {
   personal_phone: string;
   phone_id: string;
   system_prompt: string;
+  whatsapp_business_id: string;
   verify_token: string;
   whatsapp_token: string;
 };
@@ -39,6 +40,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   system_prompt: "",
   whatsapp_token: "",
   phone_id: "",
+  whatsapp_business_id: "",
   personal_phone: "",
   verify_token: "my_secret_token",
 };
@@ -123,11 +125,20 @@ function extractMessageText(message: any): string {
   return `[Unsupported message type: ${String(message?.type ?? "unknown")}]`;
 }
 
-function parseIncomingMessages(body: any): StoredMessage[] {
+function parseIncomingMessages(body: any, expectedBusinessId?: string): StoredMessage[] {
   const incoming: StoredMessage[] = [];
   const entries = Array.isArray(body?.entry) ? body.entry : [];
 
   for (const entry of entries) {
+    if (
+      expectedBusinessId &&
+      typeof entry?.id === "string" &&
+      entry.id.length > 0 &&
+      entry.id !== expectedBusinessId
+    ) {
+      continue;
+    }
+
     const changes = Array.isArray(entry?.changes) ? entry.changes : [];
     for (const change of changes) {
       const value = change?.value;
@@ -175,6 +186,7 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
   const ENV_VERIFY_TOKEN = process.env.VERIFY_TOKEN?.trim();
+  const ENV_WHATSAPP_BUSINESS_ID = process.env.WHATSAPP_BUSINESS_ID?.trim();
   const { state, statePath } = await initializeState();
 
   app.use(express.json({ limit: "2mb" }));
@@ -202,6 +214,10 @@ async function startServer() {
         system_prompt: typeof payload.system_prompt === "string" ? payload.system_prompt : state.settings.system_prompt,
         whatsapp_token: typeof payload.whatsapp_token === "string" ? payload.whatsapp_token : state.settings.whatsapp_token,
         phone_id: typeof payload.phone_id === "string" ? payload.phone_id : state.settings.phone_id,
+        whatsapp_business_id:
+          typeof payload.whatsapp_business_id === "string"
+            ? payload.whatsapp_business_id
+            : state.settings.whatsapp_business_id,
         personal_phone: typeof payload.personal_phone === "string" ? payload.personal_phone : state.settings.personal_phone,
         verify_token: typeof payload.verify_token === "string" ? payload.verify_token : state.settings.verify_token,
       };
@@ -234,10 +250,17 @@ async function startServer() {
   });
 
   app.post("/webhook", async (req, res) => {
-    const incomingMessages = parseIncomingMessages(req.body);
+    const effectiveBusinessId = ENV_WHATSAPP_BUSINESS_ID || state.settings.whatsapp_business_id;
+    const incomingMessages = parseIncomingMessages(req.body, effectiveBusinessId || undefined);
 
     if (incomingMessages.length === 0) {
-      console.log("Webhook event received with no inbound messages");
+      if (effectiveBusinessId) {
+        console.log(
+          `Webhook event received with no inbound messages for business id ${effectiveBusinessId}`
+        );
+      } else {
+        console.log("Webhook event received with no inbound messages");
+      }
       return res.sendStatus(200);
     }
 
