@@ -1,7 +1,7 @@
 import express from "express";
 import axios from "axios";
 import crypto from "crypto";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, rename, writeFile } from "fs/promises";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -105,6 +105,7 @@ type GoogleSheetsSyncPayload = {
 
 const sessionStore = new Map<string, SessionRecord>();
 const loginAttemptStore = new Map<string, LoginAttemptRecord>();
+let stateWriteQueue: Promise<void> = Promise.resolve();
 
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) {
@@ -236,7 +237,17 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
 }
 
 async function saveState(statePath: string, state: AppState): Promise<void> {
-  await writeFile(statePath, JSON.stringify(state, null, 2), "utf-8");
+  const payload = JSON.stringify(state, null, 2);
+  const tmpPath = `${statePath}.tmp`;
+  stateWriteQueue = stateWriteQueue
+    .catch(() => {
+      // Keep queue alive even after a previous write failure.
+    })
+    .then(async () => {
+      await writeFile(tmpPath, payload, "utf-8");
+      await rename(tmpPath, statePath);
+    });
+  await stateWriteQueue;
 }
 
 async function initializeState(): Promise<{ state: AppState; statePath: string }> {
@@ -905,6 +916,11 @@ async function startServer() {
   const ENV_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || "change-me-now";
   const { state, statePath } = await initializeState();
 
+  if (!state.settings.system_prompt && ENV_SYSTEM_PROMPT) {
+    state.settings.system_prompt = ENV_SYSTEM_PROMPT;
+    await saveState(statePath, state);
+  }
+
   if (ENV_ADMIN_PASSWORD === "change-me-now") {
     console.warn("Using default ADMIN_PASSWORD. Set a strong ADMIN_PASSWORD in environment variables.");
   }
@@ -1321,7 +1337,7 @@ async function startServer() {
           phoneId: phoneId || "",
           personalPhone: personalPhone || "",
           leadNotifyThreshold,
-          systemPrompt: ENV_SYSTEM_PROMPT || state.settings.system_prompt,
+          systemPrompt: state.settings.system_prompt || ENV_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
         };
         void autoReplyToIncomingMessages(newlyStoredIncoming, state, statePath, runtimeSettings);
       }
