@@ -5,7 +5,6 @@ import {
   AlertCircle, 
   Send, 
   User, 
-  LogOut, 
   CheckCircle2, 
   Clock,
   ShieldAlert,
@@ -13,16 +12,6 @@ import {
   X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  signInWithPopup, 
-  signInWithRedirect,
-  getRedirectResult,
-  GoogleAuthProvider, 
-  onAuthStateChanged, 
-  signOut,
-  User as FirebaseUser
-} from 'firebase/auth';
-import { FirebaseError } from 'firebase/app';
 import { 
   collection, 
   query, 
@@ -33,7 +22,7 @@ import {
   setDoc,
   limit
 } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { db } from './firebase';
 import { cn } from './lib/utils';
 
 interface Message {
@@ -59,11 +48,8 @@ interface AppSettings {
 }
 
 export default function App() {
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [dbError, setDbError] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     system_prompt: '',
     whatsapp_token: '',
@@ -75,86 +61,35 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    const resolveRedirectLogin = async () => {
-      try {
-        await getRedirectResult(auth);
-      } catch (error) {
-        const firebaseError = error as FirebaseError;
-        if (firebaseError.code === 'auth/unauthorized-domain') {
-          setAuthError(`Google login blocked for this domain. Add "${window.location.hostname}" to Firebase Auth > Settings > Authorized domains.`);
-          return;
-        }
-        setAuthError('Google login failed after redirect. Please try again.');
-      }
-    };
-    resolveRedirectLogin();
-  }, []);
-
-  useEffect(() => {
-    if (!user) return;
-
     const q = query(collection(db, 'messages'), orderBy('timestamp', 'desc'), limit(50));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
-      setMessages(msgs);
-    });
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+        setMessages(msgs);
+      },
+      (error) => {
+        console.error('Failed to read messages', error);
+        setDbError('Database access blocked by Firestore rules. Update Firestore rules if you want no-login access.');
+      }
+    );
 
     const fetchSettings = async () => {
-      const docRef = doc(db, 'settings', 'global');
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setSettings(docSnap.data() as AppSettings);
+      try {
+        const docRef = doc(db, 'settings', 'global');
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setSettings(docSnap.data() as AppSettings);
+        }
+      } catch (error) {
+        console.error('Failed to read settings', error);
+        setDbError('Database access blocked by Firestore rules. Update Firestore rules if you want no-login access.');
       }
     };
     fetchSettings();
 
     return () => unsubscribe();
-  }, [user]);
-
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    setAuthError(null);
-    const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
-
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      const firebaseError = error as FirebaseError;
-      console.error("Login failed", firebaseError);
-
-      const popupFallbackCodes = new Set([
-        'auth/popup-blocked',
-        'auth/popup-closed-by-user',
-        'auth/cancelled-popup-request',
-        'auth/operation-not-supported-in-this-environment'
-      ]);
-
-      if (popupFallbackCodes.has(firebaseError.code)) {
-        await signInWithRedirect(auth, provider);
-        return;
-      }
-
-      if (firebaseError.code === 'auth/unauthorized-domain') {
-        setAuthError(`Google login blocked for this domain. Add "${window.location.hostname}" to Firebase Auth > Settings > Authorized domains.`);
-        return;
-      }
-
-      setAuthError('Google sign-in failed. Please try again.');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleLogout = () => signOut(auth);
+  }, []);
 
   const saveSettings = async () => {
     try {
@@ -162,50 +97,10 @@ export default function App() {
       alert("Settings saved successfully!");
     } catch (error) {
       console.error("Failed to save settings", error);
+      setDbError('Database write blocked by Firestore rules. Update Firestore rules if you want no-login access.');
       alert("Failed to save settings. Check console for details.");
     }
   };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <motion.div 
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full"
-        />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center"
-        >
-          <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <MessageSquare size={32} />
-          </div>
-          <h1 className="text-2xl font-bold text-slate-900 mb-2">WhatsApp Intelligence</h1>
-          <p className="text-slate-500 mb-8">Manage your AI-powered WhatsApp automation layer.</p>
-          <button 
-            onClick={handleLogin}
-            disabled={isLoggingIn}
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors flex items-center justify-center gap-2"
-          >
-            <User size={20} />
-            {isLoggingIn ? 'Signing in...' : 'Sign in with Google'}
-          </button>
-          {authError && (
-            <p className="text-sm text-rose-600 mt-4">{authError}</p>
-          )}
-        </motion.div>
-      </div>
-    );
-  }
 
   const alerts = messages.filter(m => m.ai_response?.is_important);
 
@@ -261,19 +156,14 @@ export default function App() {
 
           <div className="p-4 border-t border-slate-100">
             <div className="flex items-center gap-3 px-4 py-3 mb-2">
-              <img src={user.photoURL || ''} className="w-8 h-8 rounded-full" alt="User" />
+              <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
+                <User size={14} className="text-slate-500" />
+              </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{user.displayName}</p>
-                <p className="text-xs text-slate-500 truncate">{user.email}</p>
+                <p className="text-sm font-medium text-slate-900 truncate">Admin Panel</p>
+                <p className="text-xs text-slate-500 truncate">No login required</p>
               </div>
             </div>
-            <button 
-              onClick={handleLogout}
-              className="w-full flex items-center gap-3 px-4 py-2 text-slate-500 hover:text-rose-600 transition-colors"
-            >
-              <LogOut size={18} />
-              <span className="text-sm font-medium">Sign Out</span>
-            </button>
           </div>
         </div>
       </aside>
@@ -294,6 +184,11 @@ export default function App() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-6">
+          {dbError && (
+            <div className="max-w-4xl mx-auto mb-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm">
+              {dbError}
+            </div>
+          )}
           <AnimatePresence mode="wait">
             {activeTab === 'messages' && (
               <motion.div 
