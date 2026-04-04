@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "aayushman018@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    // Messages: Admins can read/write, system can write
+    match /messages/{messageId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() || request.auth == null; // Allow webhook (unauthenticated) to write if needed, but better to use Admin SDK on backend
+      allow update, delete: if isAdmin();
+    }
+
+    // Settings: Only admins can read/write
+    match /settings/{settingId} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

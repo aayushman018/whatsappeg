@@ -1,0 +1,48 @@
+{
+  "entities": {
+    "Message": {
+      "title": "Message",
+      "description": "A WhatsApp message record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "from": { "type": "string", "description": "Sender phone number" },
+        "to": { "type": "string", "description": "Receiver phone number" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "type": { "type": "string", "enum": ["incoming", "outgoing"] },
+        "ai_response": {
+          "type": "object",
+          "properties": {
+            "reply_to_user": { "type": "string" },
+            "is_important": { "type": "boolean" },
+            "importance_reason": { "type": "string" },
+            "summary": { "type": "string" }
+          }
+        }
+      },
+      "required": ["from", "text", "timestamp", "type"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Application configuration.",
+      "type": "object",
+      "properties": {
+        "system_prompt": { "type": "string" },
+        "whatsapp_token": { "type": "string" },
+        "phone_id": { "type": "string" },
+        "personal_phone": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "messages": {
+      "schema": "Message",
+      "description": "Collection of all WhatsApp messages."
+    },
+    "settings": {
+      "schema": "Setting",
+      "description": "Global application settings."
+    }
+  }
+}
