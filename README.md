@@ -18,3 +18,11 @@ View your app in AI Studio: https://ai.studio/apps/1e337cdb-9b6d-400a-9986-3f6ec
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Render + Google Sign-In
+
+If Google sign-in fails on Render with an unauthorized domain error, add your Render host to Firebase:
+
+1. Open Firebase Console -> Authentication -> Settings -> Authorized domains
+2. Add your production domain (example: `whatsappeg.onrender.com`)
+3. Save and redeploy

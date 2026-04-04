@@ -15,11 +15,14 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider, 
   onAuthStateChanged, 
   signOut,
   User as FirebaseUser
 } from 'firebase/auth';
+import { FirebaseError } from 'firebase/app';
 import { 
   collection, 
   query, 
@@ -58,6 +61,8 @@ interface AppSettings {
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [settings, setSettings] = useState<AppSettings>({
     system_prompt: '',
@@ -75,6 +80,22 @@ export default function App() {
       setLoading(false);
     });
     return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const resolveRedirectLogin = async () => {
+      try {
+        await getRedirectResult(auth);
+      } catch (error) {
+        const firebaseError = error as FirebaseError;
+        if (firebaseError.code === 'auth/unauthorized-domain') {
+          setAuthError(`Google login blocked for this domain. Add "${window.location.hostname}" to Firebase Auth > Settings > Authorized domains.`);
+          return;
+        }
+        setAuthError('Google login failed after redirect. Please try again.');
+      }
+    };
+    resolveRedirectLogin();
   }, []);
 
   useEffect(() => {
@@ -99,10 +120,37 @@ export default function App() {
   }, [user]);
 
   const handleLogin = async () => {
+    setIsLoggingIn(true);
+    setAuthError(null);
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+
     try {
-      await signInWithPopup(auth, new GoogleAuthProvider());
+      await signInWithPopup(auth, provider);
     } catch (error) {
-      console.error("Login failed", error);
+      const firebaseError = error as FirebaseError;
+      console.error("Login failed", firebaseError);
+
+      const popupFallbackCodes = new Set([
+        'auth/popup-blocked',
+        'auth/popup-closed-by-user',
+        'auth/cancelled-popup-request',
+        'auth/operation-not-supported-in-this-environment'
+      ]);
+
+      if (popupFallbackCodes.has(firebaseError.code)) {
+        await signInWithRedirect(auth, provider);
+        return;
+      }
+
+      if (firebaseError.code === 'auth/unauthorized-domain') {
+        setAuthError(`Google login blocked for this domain. Add "${window.location.hostname}" to Firebase Auth > Settings > Authorized domains.`);
+        return;
+      }
+
+      setAuthError('Google sign-in failed. Please try again.');
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -145,11 +193,15 @@ export default function App() {
           <p className="text-slate-500 mb-8">Manage your AI-powered WhatsApp automation layer.</p>
           <button 
             onClick={handleLogin}
+            disabled={isLoggingIn}
             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors flex items-center justify-center gap-2"
           >
             <User size={20} />
-            Sign in with Google
+            {isLoggingIn ? 'Signing in...' : 'Sign in with Google'}
           </button>
+          {authError && (
+            <p className="text-sm text-rose-600 mt-4">{authError}</p>
+          )}
         </motion.div>
       </div>
     );
