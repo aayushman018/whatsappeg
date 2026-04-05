@@ -231,14 +231,34 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   try {
     const raw = await readFile(filePath, "utf-8");
     return JSON.parse(raw) as T;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      console.warn(`Failed reading JSON file: ${filePath}`, error);
+    }
     return fallback;
   }
+}
+
+async function loadPersistedState(statePath: string): Promise<Partial<AppState>> {
+  const main = await readJsonFile<Partial<AppState> | null>(statePath, null);
+  if (main && typeof main === "object") {
+    return main;
+  }
+
+  const backupPath = `${statePath}.bak`;
+  const backup = await readJsonFile<Partial<AppState> | null>(backupPath, null);
+  if (backup && typeof backup === "object") {
+    console.warn("Recovered app state from backup file.");
+    return backup;
+  }
+
+  return {};
 }
 
 async function saveState(statePath: string, state: AppState): Promise<void> {
   const payload = JSON.stringify(state, null, 2);
   const tmpPath = `${statePath}.tmp`;
+  const backupPath = `${statePath}.bak`;
   stateWriteQueue = stateWriteQueue
     .catch(() => {
       // Keep queue alive even after a previous write failure.
@@ -246,6 +266,7 @@ async function saveState(statePath: string, state: AppState): Promise<void> {
     .then(async () => {
       await writeFile(tmpPath, payload, "utf-8");
       await rename(tmpPath, statePath);
+      await writeFile(backupPath, payload, "utf-8");
     });
   await stateWriteQueue;
 }
@@ -262,7 +283,7 @@ async function initializeState(): Promise<{ state: AppState; statePath: string }
     settings: DEFAULT_SETTINGS,
     meta: {},
   };
-  const persisted = await readJsonFile<Partial<AppState>>(statePath, {});
+  const persisted = await loadPersistedState(statePath);
 
   const state: AppState = {
     contacts:
@@ -525,6 +546,27 @@ function extractFirstJsonObject(text: string): string | null {
   return text.slice(start, end + 1);
 }
 
+function normalizeSuggestionList(raw: unknown, count: number): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const unique = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const cleaned = item.trim();
+    if (!cleaned) {
+      continue;
+    }
+    unique.add(cleaned);
+    if (unique.size >= count) {
+      break;
+    }
+  }
+  return Array.from(unique.values());
+}
+
 function buildConversationMemory(messages: StoredMessage[], limit = 25): string {
   if (messages.length === 0) {
     return "No prior conversation history.";
@@ -537,6 +579,25 @@ function buildConversationMemory(messages: StoredMessage[], limit = 25): string 
       return `${role}: ${message.text}`;
     })
     .join("\n");
+}
+
+function looksLikeGreeting(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return /^(hi|hello|hey|good morning|good afternoon|good evening)\b/.test(normalized);
+}
+
+function hasRecentAssistantGreeting(messages: StoredMessage[], withinHours = 24): boolean {
+  const cutoffMs = Date.now() - withinHours * 60 * 60 * 1000;
+  return messages.some((message) => {
+    if (message.type !== "outgoing") {
+      return false;
+    }
+    const ts = Date.parse(message.timestamp);
+    if (!Number.isFinite(ts) || ts < cutoffMs) {
+      return false;
+    }
+    return looksLikeGreeting(message.text);
+  });
 }
 
 function normalizeAiResult(
@@ -576,7 +637,10 @@ function normalizeAiResult(
 async function generateAiResponse(
   incomingText: string,
   systemPrompt: string,
-  conversationHistory: StoredMessage[]
+  conversationHistory: StoredMessage[],
+  options?: {
+    avoidGreeting?: boolean;
+  }
 ): Promise<NonNullable<StoredMessage["ai_response"]>> {
   const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
   const fallbackReply = "Thanks for your message. We received it and will get back to you shortly.";
@@ -599,6 +663,12 @@ async function generateAiResponse(
       model,
       contents:
         [
+          "You are continuing an ongoing WhatsApp conversation.",
+          "Do not repeat greetings if the conversation is already active.",
+          options?.avoidGreeting
+            ? "Greeting rule: DO NOT start with hi/hello/hey in this reply."
+            : "Greeting rule: A greeting is optional only if this is a fresh chat.",
+          "",
           "Return ONLY JSON object with keys:",
           "reply_to_user (string),",
           "is_important (boolean),",
@@ -642,6 +712,76 @@ async function generateAiResponse(
       lead_score: 5,
       summary: incomingText.slice(0, 140),
     };
+  }
+}
+
+async function generateManualReplySuggestions(
+  conversationHistory: StoredMessage[],
+  systemPrompt: string,
+  count: number
+): Promise<string[]> {
+  const fallback = [
+    "Thank you for your message. Let me check this and get back shortly.",
+    "Got it. Could you please share a little more detail so I can help better?",
+    "Understood. I have noted this and will update you soon.",
+  ].slice(0, count);
+
+  const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
+  if (!apiKey) {
+    return fallback;
+  }
+
+  const avoidGreeting = hasRecentAssistantGreeting(conversationHistory, 24);
+  const model = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash-lite";
+  const ai = new GoogleGenAI({ apiKey });
+
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: [
+        "Create concise manual-reply suggestions for a human operator in an ongoing WhatsApp chat.",
+        "Return ONLY JSON object: {\"suggestions\": [\"...\", \"...\", \"...\"]}",
+        `Provide exactly ${count} suggestions.`,
+        avoidGreeting
+          ? "Do not start with greetings (hi/hello/hey)."
+          : "Greeting can be used only if clearly a fresh conversation.",
+        `System prompt context: ${systemPrompt || DEFAULT_SYSTEM_PROMPT}`,
+        "",
+        "Conversation context (last 25 messages):",
+        buildConversationMemory(conversationHistory, 25),
+      ].join("\n"),
+    });
+
+    const text = (response.text ?? "").trim();
+    const withoutFence = stripCodeFences(text);
+    const parsedDirect = safeJsonParse<{ suggestions?: unknown }>(withoutFence);
+    if (parsedDirect) {
+      const normalized = normalizeSuggestionList(parsedDirect.suggestions, count);
+      if (normalized.length > 0) {
+        return normalized;
+      }
+    }
+
+    const extracted = extractFirstJsonObject(withoutFence);
+    if (extracted) {
+      const parsedExtracted = safeJsonParse<{ suggestions?: unknown }>(extracted);
+      if (parsedExtracted) {
+        const normalized = normalizeSuggestionList(parsedExtracted.suggestions, count);
+        if (normalized.length > 0) {
+          return normalized;
+        }
+      }
+    }
+
+    const roughLines = withoutFence
+      .split("\n")
+      .map((line) => line.replace(/^[-*\d.)\s]+/, "").trim())
+      .filter((line) => line.length > 0);
+    const rough = normalizeSuggestionList(roughLines, count);
+    return rough.length > 0 ? rough : fallback;
+  } catch (error) {
+    console.error("Failed to generate manual reply suggestions", error);
+    return fallback;
   }
 }
 
@@ -719,11 +859,19 @@ async function autoReplyToIncomingMessages(
       const sameThreadMessages = state.messages.filter(
         (message) => normalizePhone(message.from) === normalizePhone(incomingMessage.from)
       );
-      const aiResponse = await generateAiResponse(
+      const avoidGreeting = hasRecentAssistantGreeting(sameThreadMessages, 24);
+      let aiResponse = await generateAiResponse(
         incomingMessage.text,
         runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-        sameThreadMessages
+        sameThreadMessages,
+        { avoidGreeting }
       );
+      if (avoidGreeting && looksLikeGreeting(aiResponse.reply_to_user)) {
+        aiResponse = {
+          ...aiResponse,
+          reply_to_user: "Thanks for your message. I have noted this and will continue from here.",
+        };
+      }
 
       const sentId = await sendWhatsAppMessage(
         incomingMessage.from,
@@ -1185,6 +1333,34 @@ async function startServer() {
 
   app.get("/api/analytics", requireAuth, (_req, res) => {
     res.json(buildAnalytics(state));
+  });
+
+  app.post("/api/reply-suggestions", requireAuth, async (req, res) => {
+    try {
+      const phone = typeof req.body?.to === "string" ? normalizePhone(req.body.to) : "";
+      if (!phone) {
+        return res.status(400).json({ ok: false, error: "Field 'to' is required." });
+      }
+
+      const countRaw = Number(req.body?.count);
+      const count =
+        Number.isFinite(countRaw) && countRaw > 0 ? Math.min(Math.floor(countRaw), 5) : 3;
+
+      const conversationHistory = state.messages
+        .filter((message) => normalizePhone(message.from) === phone)
+        .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+        .slice(-25);
+
+      const suggestions = await generateManualReplySuggestions(
+        conversationHistory,
+        state.settings.system_prompt || ENV_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
+        count
+      );
+      return res.json({ ok: true, suggestions });
+    } catch (error) {
+      console.error("Failed generating manual reply suggestions", error);
+      return res.status(500).json({ ok: false, error: "Failed to generate suggestions" });
+    }
   });
 
   app.post("/api/reply", requireAuth, async (req, res) => {

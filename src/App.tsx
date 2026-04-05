@@ -11,6 +11,7 @@ import {
   Search,
   Settings,
   User,
+  Wand2,
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -142,6 +143,8 @@ export default function App() {
   const [selectedConversationPhone, setSelectedConversationPhone] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [manualReplyText, setManualReplyText] = useState('');
+  const [replySuggestions, setReplySuggestions] = useState<string[]>([]);
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
   const [isSendingManualReply, setIsSendingManualReply] = useState(false);
   const [isUpdatingContact, setIsUpdatingContact] = useState(false);
 
@@ -389,10 +392,37 @@ export default function App() {
         body: JSON.stringify({ to: selectedConversationPhone, text: manualReplyText.trim() }),
       });
       setManualReplyText('');
+      setReplySuggestions([]);
     } catch {
       setApiError('Failed to send manual reply.');
     } finally {
       setIsSendingManualReply(false);
+    }
+  };
+
+  const generateReplySuggestions = async () => {
+    if (!selectedConversationPhone) {
+      return;
+    }
+    setIsGeneratingSuggestions(true);
+    try {
+      const payload = await fetchWithAuthHandling<{ ok?: boolean; suggestions?: string[] }>(
+        '/api/reply-suggestions',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: selectedConversationPhone, count: 3 }),
+        }
+      );
+      setReplySuggestions(
+        Array.isArray(payload.suggestions)
+          ? payload.suggestions.filter((item) => typeof item === 'string' && item.trim().length > 0)
+          : []
+      );
+    } catch {
+      setApiError('Failed to generate reply suggestions.');
+    } finally {
+      setIsGeneratingSuggestions(false);
     }
   };
 
@@ -437,6 +467,10 @@ export default function App() {
       setSelectedConversationPhone(conversations[0].phone);
     }
   }, [conversations, selectedConversationPhone]);
+
+  useEffect(() => {
+    setReplySuggestions([]);
+  }, [selectedConversationPhone]);
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.phone === selectedConversationPhone) ?? null,
@@ -889,6 +923,15 @@ export default function App() {
                                 className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white"
                               />
                               <button
+                                type="button"
+                                onClick={() => void generateReplySuggestions()}
+                                disabled={isGeneratingSuggestions}
+                                className="px-3 py-2 border border-slate-300 bg-white text-slate-700 rounded-xl text-sm font-semibold disabled:opacity-60 inline-flex items-center gap-2"
+                              >
+                                <Wand2 size={14} />
+                                {isGeneratingSuggestions ? 'Thinking...' : 'Suggest'}
+                              </button>
+                              <button
                                 type="submit"
                                 disabled={isSendingManualReply || !manualReplyText.trim()}
                                 className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
@@ -896,6 +939,20 @@ export default function App() {
                                 {isSendingManualReply ? 'Sending...' : 'Send'}
                               </button>
                             </div>
+                            {replySuggestions.length > 0 && (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {replySuggestions.map((suggestion) => (
+                                  <button
+                                    key={suggestion}
+                                    type="button"
+                                    onClick={() => setManualReplyText(suggestion)}
+                                    className="text-xs text-left px-3 py-2 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                                  >
+                                    {suggestion}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </form>
                         </div>
                       )}
