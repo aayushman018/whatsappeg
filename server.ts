@@ -16,16 +16,26 @@ const __dirname = path.dirname(__filename);
 
 let db: any = null;
 try {
-  const keyPath = path.join(__dirname, "serviceAccountKey.json");
-  if (existsSync(keyPath)) {
-    const serviceAccount = JSON.parse(readFileSync(keyPath, "utf8"));
-    initializeApp({
-      credential: cert(serviceAccount)
-    });
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    const serviceAccount = JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8'));
+    initializeApp({ credential: cert(serviceAccount) });
     db = getFirestore();
-    console.log("Firebase Admin initialized with service account.");
+    console.log("Firebase Admin initialized from ENV base64 var.");
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    initializeApp({ credential: cert(serviceAccount) });
+    db = getFirestore();
+    console.log("Firebase Admin initialized from ENV var.");
   } else {
-    console.warn("serviceAccountKey.json not found, Firebase Admin not initialized.");
+    const keyPath = path.join(__dirname, "serviceAccountKey.json");
+    if (existsSync(keyPath)) {
+      const serviceAccount = JSON.parse(readFileSync(keyPath, "utf8"));
+      initializeApp({ credential: cert(serviceAccount) });
+      db = getFirestore();
+      console.log("Firebase Admin initialized with service account.");
+    } else {
+      console.warn("serviceAccountKey.json not found, Firebase Admin not initialized.");
+    }
   }
 } catch (error) {
   console.error("Error initializing Firebase Admin:", error);
@@ -314,8 +324,18 @@ async function loadPersistedState(statePath: string): Promise<Partial<AppState>>
         stateObj.messages = sortMessagesNewestFirst(messages);
       }
       
-      if (stateObj.settings || stateObj.messages) {
+      const contactsDoc = await db.collection("settings").doc("contacts").get();
+      if (contactsDoc.exists) {
+        stateObj.contacts = contactsDoc.data() as Record<string, ContactConfig>;
+      }
+
+      if (stateObj.settings || stateObj.messages || stateObj.contacts) {
         console.log("State loaded successfully from Firestore.");
+        const main = await readJsonFile<Partial<AppState> | null>(statePath, null);
+        if (main && typeof main === "object") {
+          stateObj.contacts = stateObj.contacts || main.contacts;
+          stateObj.meta = stateObj.meta || main.meta;
+        }
         return stateObj;
       }
     } catch (e) {
@@ -354,6 +374,9 @@ async function saveState(statePath: string, state: AppState): Promise<void> {
       if (db && state.settings) {
         try {
           await db.collection("settings").doc("global").set(state.settings);
+          if (state.contacts) {
+            await db.collection("settings").doc("contacts").set(state.contacts);
+          }
           if (state.flows || state.flowStates) {
             await db.collection("settings").doc("flows").set({
               flows: state.flows || [],
