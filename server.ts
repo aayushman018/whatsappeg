@@ -329,7 +329,7 @@ async function loadPersistedState(statePath: string): Promise<Partial<AppState>>
         stateObj.contacts = contactsDoc.data() as Record<string, ContactConfig>;
       }
 
-      if (stateObj.settings || stateObj.messages || stateObj.contacts) {
+      if (stateObj.settings || stateObj.messages || stateObj.contacts || stateObj.flows || stateObj.flowStates) {
         console.log("State loaded successfully from Firestore.");
         const main = await readJsonFile<Partial<AppState> | null>(statePath, null);
         if (main && typeof main === "object") {
