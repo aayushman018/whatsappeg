@@ -499,6 +499,16 @@ function extractMessageText(message: any): string {
     return "[Sticker message]";
   }
 
+  if (message?.type === "interactive") {
+    if (message?.interactive?.type === "button_reply") {
+      return message.interactive.button_reply.title || "[Button Clicked]";
+    }
+    if (message?.interactive?.type === "list_reply") {
+      return message.interactive.list_reply.title || "[List Item Selected]";
+    }
+    return "[Interactive Message]";
+  }
+
   return `[Unsupported message type: ${String(message?.type ?? "unknown")}]`;
 }
 
@@ -872,6 +882,36 @@ async function sendWhatsAppMessage(
   return typeof sentId === "string" ? sentId : null;
 }
 
+async function sendWhatsAppInteractiveMessage(
+  to: string,
+  interactivePayload: any,
+  phoneId: string,
+  whatsappToken: string
+): Promise<string | null> {
+  const apiVersion = process.env.WHATSAPP_API_VERSION?.trim() || "v20.0";
+  const endpoint = `https://graph.facebook.com/${apiVersion}/${phoneId}/messages`;
+
+  const resp = await axios.post(
+    endpoint,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: interactivePayload,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${whatsappToken}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 20000,
+    }
+  );
+
+  const sentId = resp.data?.messages?.[0]?.id;
+  return typeof sentId === "string" ? sentId : null;
+}
+
 function upsertStoredMessage(state: AppState, message: StoredMessage): void {
   const idx = state.messages.findIndex((existing) => existing.id === message.id);
   if (idx >= 0) {
@@ -919,26 +959,59 @@ async function autoReplyToIncomingMessages(
       const sameThreadMessages = state.messages.filter(
         (message) => normalizePhone(message.from) === normalizePhone(incomingMessage.from)
       );
-      const avoidGreeting = hasRecentAssistantGreeting(sameThreadMessages, 24);
-      let aiResponse = await generateAiResponse(
-        incomingMessage.text,
-        runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-        sameThreadMessages,
-        { avoidGreeting }
-      );
-      if (avoidGreeting && looksLikeGreeting(aiResponse.reply_to_user)) {
-        aiResponse = {
-          ...aiResponse,
-          reply_to_user: "Thanks for your message. I have noted this and will continue from here.",
-        };
-      }
+      
+      const isNewCustomer = sameThreadMessages.length === 1 && incomingMessage.type === "incoming";
+      let aiResponse: NonNullable<StoredMessage["ai_response"]>;
+      let sentId: string | null = null;
+      let replyText = "";
 
-      const sentId = await sendWhatsAppMessage(
-        incomingMessage.from,
-        aiResponse.reply_to_user,
-        runtimeSettings.phoneId,
-        runtimeSettings.whatsappToken
-      );
+      if (isNewCustomer) {
+        replyText = "Welcome to Yaadgar! How can we help you today?";
+        const interactivePayload = {
+          type: "button",
+          body: { text: replyText },
+          action: {
+            buttons: [
+              { type: "reply", reply: { id: "btn_catalog", title: "View Catalog" } },
+              { type: "reply", reply: { id: "btn_agent", title: "Talk to Agent" } }
+            ]
+          }
+        };
+        sentId = await sendWhatsAppInteractiveMessage(
+          incomingMessage.from,
+          interactivePayload,
+          runtimeSettings.phoneId,
+          runtimeSettings.whatsappToken
+        );
+        aiResponse = {
+          reply_to_user: replyText,
+          is_important: false,
+          importance_reason: "New customer welcome flow",
+          lead_score: 5,
+          summary: "Sent welcome menu"
+        };
+      } else {
+        const avoidGreeting = hasRecentAssistantGreeting(sameThreadMessages, 24);
+        aiResponse = await generateAiResponse(
+          incomingMessage.text,
+          runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+          sameThreadMessages,
+          { avoidGreeting }
+        );
+        if (avoidGreeting && looksLikeGreeting(aiResponse.reply_to_user)) {
+          aiResponse = {
+            ...aiResponse,
+            reply_to_user: "Thanks for your message. I have noted this and will continue from here.",
+          };
+        }
+        sentId = await sendWhatsAppMessage(
+          incomingMessage.from,
+          aiResponse.reply_to_user,
+          runtimeSettings.phoneId,
+          runtimeSettings.whatsappToken
+        );
+        replyText = aiResponse.reply_to_user;
+      }
 
       const outgoingId = sentId || `${incomingMessage.id}:reply`;
       const outgoingMessage: StoredMessage = {
@@ -949,7 +1022,7 @@ async function autoReplyToIncomingMessages(
         is_priority: false,
         priority_reasons: [],
         reply_source: "ai",
-        text: aiResponse.reply_to_user,
+        text: replyText,
         timestamp: new Date().toISOString(),
         type: "outgoing",
       };
