@@ -66,6 +66,33 @@ type AppSettings = {
   whatsapp_token: string;
 };
 
+interface FlowNode {
+  id: string;
+  type: string;
+  data: any;
+  position: { x: number, y: number };
+}
+
+interface FlowEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+}
+
+interface Flow {
+  id: string;
+  name: string;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+}
+
+interface FlowState {
+  active_flow_id: string;
+  current_node_id: string;
+}
+
 type AppState = {
   contacts: Record<string, ContactConfig>;
   meta?: {
@@ -73,6 +100,8 @@ type AppState = {
   };
   messages: StoredMessage[];
   settings: AppSettings;
+  flows?: Flow[];
+  flowStates?: Record<string, FlowState>;
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -269,6 +298,13 @@ async function loadPersistedState(statePath: string): Promise<Partial<AppState>>
         stateObj.settings = settingsDoc.data() as AppSettings;
       }
       
+      const flowsDoc = await db.collection("settings").doc("flows").get();
+      if (flowsDoc.exists) {
+        const data = flowsDoc.data() as any;
+        if (data && data.flows) stateObj.flows = data.flows;
+        if (data && data.flowStates) stateObj.flowStates = data.flowStates;
+      }
+
       const messagesSnapshot = await db.collection("messages").orderBy("timestamp", "desc").limit(MAX_STORED_MESSAGES).get();
       const messages: StoredMessage[] = [];
       messagesSnapshot.forEach((doc: any) => {
@@ -318,6 +354,12 @@ async function saveState(statePath: string, state: AppState): Promise<void> {
       if (db && state.settings) {
         try {
           await db.collection("settings").doc("global").set(state.settings);
+          if (state.flows || state.flowStates) {
+            await db.collection("settings").doc("flows").set({
+              flows: state.flows || [],
+              flowStates: state.flowStates || {}
+            });
+          }
         } catch (e) {
           console.error("Failed to sync settings to Firestore:", e);
         }
@@ -926,6 +968,129 @@ function upsertStoredMessage(state: AppState, message: StoredMessage): void {
   }
 }
 
+async function processFlows(
+  phone: string,
+  incomingText: string,
+  isNewCustomer: boolean,
+  state: AppState,
+  sendMsg: (text: string) => Promise<string | null>,
+  sendInteractive: (payload: any) => Promise<string | null>
+): Promise<{ handled: boolean; aiHandoff: boolean; sentMessages: Array<{id: string, text: string}> }> {
+  const sentMessages: Array<{id: string, text: string}> = [];
+  const flows = state.flows || [];
+  if (flows.length === 0) return { handled: false, aiHandoff: false, sentMessages };
+
+  if (!state.flowStates) state.flowStates = {};
+  let activeState = state.flowStates[phone];
+
+  let currentFlow = flows.find((f) => f.id === activeState?.active_flow_id);
+  let currentNodeId = activeState?.current_node_id;
+
+  if (!currentFlow) {
+    const matchText = incomingText.toLowerCase().trim();
+    let triggerNode: FlowNode | undefined;
+
+    for (const flow of flows) {
+      const triggers = flow.nodes.filter((n) => n.type === "trigger");
+      for (const t of triggers) {
+        const keyword = String(t.data?.keyword || "").toLowerCase();
+        if ((isNewCustomer && keyword === "welcome") || keyword === matchText) {
+          triggerNode = t;
+          currentFlow = flow;
+          break;
+        }
+      }
+      if (triggerNode) break;
+    }
+
+    if (!triggerNode || !currentFlow) return { handled: false, aiHandoff: false, sentMessages };
+    currentNodeId = triggerNode.id;
+  }
+
+  let isWaitingForInput = false;
+  let aiHandoff = false;
+
+  while (currentNodeId && currentFlow && !isWaitingForInput && !aiHandoff) {
+    const currentNode = currentFlow.nodes.find((n) => n.id === currentNodeId);
+    if (!currentNode) {
+      aiHandoff = true;
+      break;
+    }
+
+    if (currentNode.type === "trigger") {
+      const edge = currentFlow.edges.find((e) => e.source === currentNode.id);
+      currentNodeId = edge?.target;
+      continue;
+    }
+
+    if (currentNode.type === "aiHandoff") {
+      aiHandoff = true;
+      break;
+    }
+
+    if (currentNode.type === "message") {
+      const text = currentNode.data?.text || "";
+      if (text) {
+        const id = await sendMsg(text);
+        if (id) sentMessages.push({ id, text });
+      }
+      const edge = currentFlow.edges.find((e) => e.source === currentNode.id);
+      currentNodeId = edge?.target;
+      continue;
+    }
+
+    if (currentNode.type === "button") {
+      if (activeState?.current_node_id === currentNode.id) {
+        const clickedBtnIndex = (currentNode.data?.buttons || []).findIndex(
+          (btnTitle: string) => btnTitle.toLowerCase() === incomingText.toLowerCase()
+        );
+        if (clickedBtnIndex >= 0) {
+          const handleId = `btn-${clickedBtnIndex}`;
+          const edge = currentFlow.edges.find(
+            (e) => e.source === currentNode.id && e.sourceHandle === handleId
+          );
+          if (edge) {
+            currentNodeId = edge.target;
+            activeState.current_node_id = currentNodeId;
+            continue;
+          } else {
+            aiHandoff = true;
+            break;
+          }
+        } else {
+          aiHandoff = true;
+          break;
+        }
+      } else {
+        const buttons = (currentNode.data?.buttons || []).slice(0, 3).map((title: string, idx: number) => ({
+          type: "reply",
+          reply: { id: `btn_${idx}`, title },
+        }));
+        const text = currentNode.data?.text || "Choose an option:";
+        const payload = {
+          type: "button",
+          body: { text },
+          action: { buttons },
+        };
+        const id = await sendInteractive(payload);
+        if (id) sentMessages.push({ id, text });
+
+        isWaitingForInput = true;
+        state.flowStates[phone] = { active_flow_id: currentFlow.id, current_node_id: currentNode.id };
+        break;
+      }
+    }
+  }
+
+  if (aiHandoff || !currentNodeId) {
+    delete state.flowStates[phone];
+  } else if (!isWaitingForInput && currentNodeId) {
+    state.flowStates[phone] = { active_flow_id: currentFlow.id, current_node_id: currentNodeId };
+  }
+
+  return { handled: true, aiHandoff, sentMessages };
+}
+
 async function autoReplyToIncomingMessages(
   messagesToReply: StoredMessage[],
   state: AppState,
@@ -961,57 +1126,83 @@ async function autoReplyToIncomingMessages(
       );
       
       const isNewCustomer = sameThreadMessages.length === 1 && incomingMessage.type === "incoming";
+      
+      const flowResult = await processFlows(
+        normalizePhone(incomingMessage.from),
+        incomingMessage.text,
+        isNewCustomer,
+        state,
+        async (text) => await sendWhatsAppMessage(incomingMessage.from, text, runtimeSettings.phoneId, runtimeSettings.whatsappToken),
+        async (payload) => await sendWhatsAppInteractiveMessage(incomingMessage.from, payload, runtimeSettings.phoneId, runtimeSettings.whatsappToken)
+      );
+
+      if (flowResult.handled && !flowResult.aiHandoff) {
+        for (const msg of flowResult.sentMessages) {
+          const outgoingMessage: StoredMessage = {
+            id: msg.id,
+            from: incomingMessage.from,
+            to: incomingMessage.to,
+            contact_name: incomingMessage.contact_name,
+            is_priority: false,
+            priority_reasons: [],
+            reply_source: "ai",
+            text: msg.text,
+            timestamp: new Date().toISOString(),
+            type: "outgoing",
+            ai_response: {
+              reply_to_user: msg.text,
+              is_important: false,
+              importance_reason: "Flow execution",
+              lead_score: 5,
+              summary: "Sent flow step"
+            }
+          };
+          upsertStoredMessage(state, outgoingMessage);
+        }
+        
+        const idx = state.messages.findIndex((m) => m.id === incomingMessage.id);
+        if (idx >= 0) {
+          upsertStoredMessage(state, {
+            ...state.messages[idx],
+            ai_response: {
+              reply_to_user: "Flow execution",
+              is_important: false,
+              importance_reason: "",
+              lead_score: 0,
+              summary: "User interacted with flow"
+            },
+          });
+        }
+        state.messages = pruneMessages(state.messages);
+        await saveState(statePath, state);
+        console.log(`Executed flow step for message ${incomingMessage.id}`);
+        continue;
+      }
+
       let aiResponse: NonNullable<StoredMessage["ai_response"]>;
       let sentId: string | null = null;
       let replyText = "";
 
-      if (isNewCustomer) {
-        replyText = "Welcome to Yaadgar! How can we help you today?";
-        const interactivePayload = {
-          type: "button",
-          body: { text: replyText },
-          action: {
-            buttons: [
-              { type: "reply", reply: { id: "btn_catalog", title: "View Catalog" } },
-              { type: "reply", reply: { id: "btn_agent", title: "Talk to Agent" } }
-            ]
-          }
-        };
-        sentId = await sendWhatsAppInteractiveMessage(
-          incomingMessage.from,
-          interactivePayload,
-          runtimeSettings.phoneId,
-          runtimeSettings.whatsappToken
-        );
+      const avoidGreeting = hasRecentAssistantGreeting(sameThreadMessages, 24);
+      aiResponse = await generateAiResponse(
+        incomingMessage.text,
+        runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+        sameThreadMessages,
+        { avoidGreeting }
+      );
+      if (avoidGreeting && looksLikeGreeting(aiResponse.reply_to_user)) {
         aiResponse = {
-          reply_to_user: replyText,
-          is_important: false,
-          importance_reason: "New customer welcome flow",
-          lead_score: 5,
-          summary: "Sent welcome menu"
+          ...aiResponse,
+          reply_to_user: "Thanks for your message. I have noted this and will continue from here.",
         };
-      } else {
-        const avoidGreeting = hasRecentAssistantGreeting(sameThreadMessages, 24);
-        aiResponse = await generateAiResponse(
-          incomingMessage.text,
-          runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-          sameThreadMessages,
-          { avoidGreeting }
-        );
-        if (avoidGreeting && looksLikeGreeting(aiResponse.reply_to_user)) {
-          aiResponse = {
-            ...aiResponse,
-            reply_to_user: "Thanks for your message. I have noted this and will continue from here.",
-          };
-        }
-        sentId = await sendWhatsAppMessage(
-          incomingMessage.from,
-          aiResponse.reply_to_user,
-          runtimeSettings.phoneId,
-          runtimeSettings.whatsappToken
-        );
-        replyText = aiResponse.reply_to_user;
       }
+      sentId = await sendWhatsAppMessage(
+        incomingMessage.from,
+        aiResponse.reply_to_user,
+        runtimeSettings.phoneId,
+        runtimeSettings.whatsappToken
+      );
+      replyText = aiResponse.reply_to_user;
 
       const outgoingId = sentId || `${incomingMessage.id}:reply`;
       const outgoingMessage: StoredMessage = {
@@ -1383,6 +1574,26 @@ async function startServer() {
 
     const sorted = sortMessagesNewestFirst([...filtered]);
     res.json(sorted.slice(0, count));
+  });
+
+  app.get("/api/flows", requireAuth, (_req, res) => {
+    res.json(state.flows || []);
+  });
+
+  app.put("/api/flows", requireAuth, async (req, res) => {
+    try {
+      const payload = req.body;
+      if (!Array.isArray(payload)) {
+        state.flows = [payload];
+      } else {
+        state.flows = payload;
+      }
+      await saveState(statePath, state);
+      res.json({ ok: true, flows: state.flows });
+    } catch (error) {
+      console.error("Failed to save flows", error);
+      res.status(500).json({ ok: false, error: "Failed to save flows" });
+    }
   });
 
   app.get("/api/settings", requireAuth, (_req, res) => {

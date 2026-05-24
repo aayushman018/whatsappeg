@@ -13,7 +13,9 @@ import {
   User,
   Wand2,
   X,
+  Workflow,
 } from 'lucide-react';
+import FlowBuilder from './FlowBuilder';
 import { AnimatePresence, motion } from 'motion/react';
 import { cn } from './lib/utils';
 import superCollectionsLogo from './assets/super-collections-logo.png';
@@ -137,7 +139,7 @@ export default function App() {
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>({ system_prompt: '' });
-  const [activeTab, setActiveTab] = useState<'messages' | 'alerts' | 'analytics' | 'settings'>(
+  const [activeTab, setActiveTab] = useState<'messages' | 'alerts' | 'analytics' | 'flowbuilder' | 'settings'>(
     'messages'
   );
   const [selectedConversationPhone, setSelectedConversationPhone] = useState<string | null>(null);
@@ -490,6 +492,7 @@ export default function App() {
     { id: 'messages', label: 'Messages', icon: MessageSquare },
     { id: 'alerts', label: 'Priority Alerts', icon: AlertCircle, count: alerts.length },
     { id: 'analytics', label: 'Business Analytics', icon: BarChart3 },
+    { id: 'flowbuilder', label: 'Flow Builder', icon: Workflow },
     { id: 'settings', label: 'Prompt Studio', icon: Settings },
   ] as const;
 
@@ -1149,6 +1152,18 @@ export default function App() {
                     Save Prompt
                   </button>
                 </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'flowbuilder' && (
+              <motion.div
+                key="flowbuilder"
+                initial={{ opacity: 0, x: 12 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -12 }}
+                className="w-full h-[calc(100vh-140px)] rounded-2xl overflow-hidden border border-slate-200"
+              >
+                <FlowBuilder />
               </motion.div>
             )}
           </AnimatePresence>
