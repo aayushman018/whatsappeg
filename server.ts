@@ -1461,9 +1461,14 @@ function buildDailySummaryText(
   return `Yesterday: ${yesterdayIncoming.length} messages, ${priorityCount} priority alerts, ${leadSet.size} new leads`;
 }
 
-async function startServer() {
-  console.log("--- Simple Server Start ---");
-  const app = express();
+export const app = express();
+let isAppSetup = false;
+
+async function setupApp() {
+  if (isAppSetup) return;
+  isAppSetup = true;
+
+  console.log("--- Setting up Serverless App ---");
   const PORT = Number(process.env.PORT) || 3000;
   const ENV_VERIFY_TOKEN = process.env.VERIFY_TOKEN?.trim();
   const ENV_WHATSAPP_BUSINESS_ID = process.env.WHATSAPP_BUSINESS_ID?.trim();
@@ -1979,20 +1984,28 @@ async function startServer() {
     }
   });
 
-  const vite = await createViteServer({
-    server: {
-      middlewareMode: true,
-      allowedHosts: true,
-    },
-    appType: "spa",
-  });
-  app.use(vite.middlewares);
+  if (!process.env.VERCEL) {
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+      },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  }
+}
 
+app.use(async (req, res, next) => {
+  await setupApp();
+  next();
+});
+
+if (!process.env.VERCEL) {
+  const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer().catch(err => {
-  console.error("Fatal startup error:", err);
-});
+export default app;
