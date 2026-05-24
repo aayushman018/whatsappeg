@@ -1539,6 +1539,12 @@ const PORT = Number(process.env.PORT) || 3000;
   }, 60 * 1000).unref();
 
   app.set("trust proxy", 1);
+  app.use((req, res, next) => {
+    if (process.env.VERCEL && req.body) {
+      (req as any)._body = true;
+    }
+    next();
+  });
   app.use(express.json({ limit: "2mb" }));
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
