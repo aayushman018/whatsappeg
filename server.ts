@@ -283,6 +283,9 @@ function secureEquals(a: string, b: string): boolean {
 }
 
 function getDataDir(): string {
+  if (process.env.VERCEL) {
+    return path.resolve("/tmp", "data");
+  }
   const configured = process.env.DATA_DIR?.trim();
   return configured ? path.resolve(configured) : path.resolve(__dirname, "data");
 }
