@@ -402,6 +402,8 @@ async function initializeState(): Promise<{ state: AppState; statePath: string }
     messages: [],
     settings: DEFAULT_SETTINGS,
     meta: {},
+    flows: [],
+    flowStates: {},
   };
   const persisted = await loadPersistedState(statePath);
 
@@ -421,6 +423,11 @@ async function initializeState(): Promise<{ state: AppState; statePath: string }
       persisted.meta && typeof persisted.meta === "object"
         ? (persisted.meta as AppState["meta"])
         : fallbackState.meta,
+    flows: Array.isArray(persisted.flows) ? persisted.flows : fallbackState.flows,
+    flowStates:
+      persisted.flowStates && typeof persisted.flowStates === "object"
+        ? persisted.flowStates
+        : fallbackState.flowStates,
   };
 
   await saveState(statePath, state);
