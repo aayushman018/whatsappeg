@@ -151,17 +151,58 @@ const ButtonNode = ({ data, id }: any) => {
 };
 
 const AiHandoffNode = ({ data, id }: any) => {
+  const { updateNodeData } = useReactFlow();
   return (
-    <div className="bg-white border-2 border-amber-400 rounded-xl shadow-sm min-w-[220px]">
+    <div className="bg-white border-2 border-amber-400 rounded-xl shadow-sm min-w-[240px]">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-amber-500 border-2 border-white" />
       <div className="bg-amber-500 px-3 py-2 rounded-t-[10px] flex items-center gap-2 text-white font-bold text-sm">
         <Bot size={16} /> AI Handoff
       </div>
-      <div className="p-3 bg-amber-50 rounded-b-[10px]">
-        <p className="text-xs text-amber-800 text-center font-medium">
-          Conversation handed to AI Agent.
+      <div className="p-3 bg-amber-50 rounded-b-[10px] space-y-2">
+        <p className="text-xs text-amber-800 font-medium">
+          Custom AI Prompt (Optional)
         </p>
+        <textarea
+          className="w-full px-2 py-1.5 text-[11px] border border-amber-200 rounded-lg focus:ring-2 focus:ring-amber-400 outline-none min-h-[80px]"
+          value={data.customPrompt || ''}
+          onChange={(e) => updateNodeData(id, { customPrompt: e.target.value })}
+          placeholder="e.g. You are a sales agent for our pricing plans..."
+        />
       </div>
+    </div>
+  );
+};
+
+const SendMediaNode = ({ data, id }: any) => {
+  const { updateNodeData } = useReactFlow();
+  return (
+    <div className="bg-white border-2 border-blue-400 rounded-xl shadow-sm min-w-[240px]">
+      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-blue-500 border-2 border-white" />
+      <div className="bg-blue-500 px-3 py-2 flex items-center gap-2 text-white font-bold text-sm rounded-t-[10px]">
+        <Image size={16} /> Send Media
+      </div>
+      <div className="p-3 space-y-3">
+        <div>
+          <label className="block text-xs font-medium text-slate-700 mb-1">Media URL (Image, PDF, Video)</label>
+          <input
+            type="text"
+            className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
+            value={data.mediaUrl || ''}
+            onChange={(e) => updateNodeData(id, { mediaUrl: e.target.value })}
+            placeholder="https://example.com/file.pdf"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-slate-700 mb-1">Caption (Optional)</label>
+          <textarea
+            className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none min-h-[50px]"
+            value={data.caption || ''}
+            onChange={(e) => updateNodeData(id, { caption: e.target.value })}
+            placeholder="Caption text..."
+          />
+        </div>
+      </div>
+      <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-blue-500 border-2 border-white" />
     </div>
   );
 };
@@ -243,6 +284,7 @@ const nodeTypes: NodeTypes = {
   message: MessageNode,
   button: ButtonNode,
   aiHandoff: AiHandoffNode,
+  sendMedia: SendMediaNode,
 };
 
 genericNodeTypes.forEach(config => {
@@ -313,6 +355,7 @@ const Sidebar = () => {
                 {renderDraggable('multiProduct', 'Multi Product', ShoppingCart)}
                 {renderDraggable('template', 'Template', LayoutTemplate)}
                 {renderDraggable('message', 'Message', MessageSquare)}
+                {renderDraggable('sendMedia', 'Send Media', Image)}
               </div>
             </div>
 

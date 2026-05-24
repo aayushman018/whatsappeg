@@ -947,6 +947,45 @@ async function sendWhatsAppMessage(
   return typeof sentId === "string" ? sentId : null;
 }
 
+async function sendWhatsAppMedia(
+  to: string,
+  mediaUrl: string,
+  caption: string,
+  phoneId: string,
+  whatsappToken: string
+): Promise<string | null> {
+  const apiVersion = process.env.WHATSAPP_API_VERSION?.trim() || "v20.0";
+  const endpoint = `https://graph.facebook.com/${apiVersion}/${phoneId}/messages`;
+  
+  // Try to determine media type from URL extension. Default to document if unknown.
+  const lowerUrl = mediaUrl.toLowerCase();
+  let mediaType = "document";
+  if (lowerUrl.match(/\.(jpeg|jpg|png)$/)) mediaType = "image";
+  else if (lowerUrl.match(/\.(mp4|3gp)$/)) mediaType = "video";
+  else if (lowerUrl.match(/\.(mp3|ogg|wav)$/)) mediaType = "audio";
+
+  const payload: any = {
+    messaging_product: "whatsapp",
+    to,
+    type: mediaType,
+  };
+  payload[mediaType] = { link: mediaUrl };
+  if (caption && mediaType !== "audio") {
+    payload[mediaType].caption = caption;
+  }
+
+  const resp = await axios.post(endpoint, payload, {
+    headers: {
+      Authorization: `Bearer ${whatsappToken}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 30000,
+  });
+
+  const sentId = resp.data?.messages?.[0]?.id;
+  return typeof sentId === "string" ? sentId : null;
+}
+
 async function sendWhatsAppInteractiveMessage(
   to: string,
   interactivePayload: any,
@@ -997,8 +1036,9 @@ async function processFlows(
   isNewCustomer: boolean,
   state: AppState,
   sendMsg: (text: string) => Promise<string | null>,
-  sendInteractive: (payload: any) => Promise<string | null>
-): Promise<{ handled: boolean; aiHandoff: boolean; sentMessages: Array<{id: string, text: string}> }> {
+  sendInteractive: (payload: any) => Promise<string | null>,
+  sendMedia: (url: string, caption: string) => Promise<string | null>
+): Promise<{ handled: boolean; aiHandoff: boolean; sentMessages: Array<{id: string, text: string}>; customPrompt?: string }> {
   const sentMessages: Array<{id: string, text: string}> = [];
   const flows = state.flows || [];
   if (flows.length === 0) return { handled: false, aiHandoff: false, sentMessages };
@@ -1032,11 +1072,14 @@ async function processFlows(
 
   let isWaitingForInput = false;
   let aiHandoff = false;
+  let customPrompt: string | undefined;
+  let flowBroken = false;
 
   while (currentNodeId && currentFlow && !isWaitingForInput && !aiHandoff) {
     const currentNode = currentFlow.nodes.find((n) => n.id === currentNodeId);
     if (!currentNode) {
       aiHandoff = true;
+      flowBroken = true;
       break;
     }
 
@@ -1048,11 +1091,24 @@ async function processFlows(
 
     if (currentNode.type === "aiHandoff") {
       aiHandoff = true;
+      customPrompt = currentNode.data?.customPrompt;
       break;
     }
 
+    if (currentNode.type === "sendMedia") {
+      const url = currentNode.data?.mediaUrl || "";
+      const caption = currentNode.data?.caption || "";
+      if (url) {
+        const id = await sendMedia(url, caption);
+        if (id) sentMessages.push({ id, text: `[Media: ${url}]` });
+      }
+      const edge = currentFlow.edges.find((e) => e.source === currentNode.id);
+      currentNodeId = edge?.target;
+      continue;
+    }
+
     if (currentNode.type === "message") {
-      const text = currentNode.data?.text || "";
+      const text = currentNode.data?.message || "";
       if (text) {
         const id = await sendMsg(text);
         if (id) sentMessages.push({ id, text });
@@ -1078,10 +1134,12 @@ async function processFlows(
             continue;
           } else {
             aiHandoff = true;
+            flowBroken = true;
             break;
           }
         } else {
           aiHandoff = true;
+          flowBroken = true;
           break;
         }
       } else {
@@ -1089,7 +1147,7 @@ async function processFlows(
           type: "reply",
           reply: { id: `btn_${idx}`, title },
         }));
-        const text = currentNode.data?.text || "Choose an option:";
+        const text = currentNode.data?.message || "Choose an option:";
         const payload = {
           type: "button",
           body: { text },
@@ -1103,15 +1161,19 @@ async function processFlows(
         break;
       }
     }
+    
+    // Unhandled node type, break out
+    const edge = currentFlow.edges.find((e) => e.source === currentNode.id);
+    currentNodeId = edge?.target;
   }
 
-  if (aiHandoff || !currentNodeId) {
+  if (flowBroken || !currentNodeId) {
     delete state.flowStates[phone];
-  } else if (!isWaitingForInput && currentNodeId) {
+  } else if (aiHandoff || (!isWaitingForInput && currentNodeId)) {
     state.flowStates[phone] = { active_flow_id: currentFlow.id, current_node_id: currentNodeId };
   }
 
-  return { handled: true, aiHandoff, sentMessages };
+  return { handled: true, aiHandoff, sentMessages, customPrompt };
 }
 
 async function autoReplyToIncomingMessages(
@@ -1156,7 +1218,8 @@ async function autoReplyToIncomingMessages(
         isNewCustomer,
         state,
         async (text) => await sendWhatsAppMessage(incomingMessage.from, text, runtimeSettings.phoneId, runtimeSettings.whatsappToken),
-        async (payload) => await sendWhatsAppInteractiveMessage(incomingMessage.from, payload, runtimeSettings.phoneId, runtimeSettings.whatsappToken)
+        async (payload) => await sendWhatsAppInteractiveMessage(incomingMessage.from, payload, runtimeSettings.phoneId, runtimeSettings.whatsappToken),
+        async (url, caption) => await sendWhatsAppMedia(incomingMessage.from, url, caption, runtimeSettings.phoneId, runtimeSettings.whatsappToken)
       );
 
       if (flowResult.handled && !flowResult.aiHandoff) {
@@ -1209,7 +1272,7 @@ async function autoReplyToIncomingMessages(
       const avoidGreeting = hasRecentAssistantGreeting(sameThreadMessages, 24);
       aiResponse = await generateAiResponse(
         incomingMessage.text,
-        runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+        flowResult.customPrompt || runtimeSettings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
         sameThreadMessages,
         { avoidGreeting }
       );
