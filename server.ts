@@ -7,8 +7,29 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import { readFileSync, existsSync } from "fs";
+import { initializeApp, cert } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+let db: any = null;
+try {
+  const keyPath = path.join(__dirname, "serviceAccountKey.json");
+  if (existsSync(keyPath)) {
+    const serviceAccount = JSON.parse(readFileSync(keyPath, "utf8"));
+    initializeApp({
+      credential: cert(serviceAccount)
+    });
+    db = getFirestore();
+    console.log("Firebase Admin initialized with service account.");
+  } else {
+    console.warn("serviceAccountKey.json not found, Firebase Admin not initialized.");
+  }
+} catch (error) {
+  console.error("Error initializing Firebase Admin:", error);
+}
 
 type StoredMessage = {
   ai_response?: {
@@ -240,6 +261,32 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
 }
 
 async function loadPersistedState(statePath: string): Promise<Partial<AppState>> {
+  if (db) {
+    try {
+      const stateObj: Partial<AppState> = {};
+      const settingsDoc = await db.collection("settings").doc("global").get();
+      if (settingsDoc.exists) {
+        stateObj.settings = settingsDoc.data() as AppSettings;
+      }
+      
+      const messagesSnapshot = await db.collection("messages").orderBy("timestamp", "desc").limit(MAX_STORED_MESSAGES).get();
+      const messages: StoredMessage[] = [];
+      messagesSnapshot.forEach((doc: any) => {
+        messages.push(doc.data() as StoredMessage);
+      });
+      if (messages.length > 0) {
+        stateObj.messages = sortMessagesNewestFirst(messages);
+      }
+      
+      if (stateObj.settings || stateObj.messages) {
+        console.log("State loaded successfully from Firestore.");
+        return stateObj;
+      }
+    } catch (e) {
+      console.error("Failed loading state from Firestore, falling back to local file:", e);
+    }
+  }
+
   const main = await readJsonFile<Partial<AppState> | null>(statePath, null);
   if (main && typeof main === "object") {
     return main;
@@ -267,6 +314,14 @@ async function saveState(statePath: string, state: AppState): Promise<void> {
       await writeFile(tmpPath, payload, "utf-8");
       await rename(tmpPath, statePath);
       await writeFile(backupPath, payload, "utf-8");
+      
+      if (db && state.settings) {
+        try {
+          await db.collection("settings").doc("global").set(state.settings);
+        } catch (e) {
+          console.error("Failed to sync settings to Firestore:", e);
+        }
+      }
     });
   await stateWriteQueue;
 }
@@ -824,6 +879,11 @@ function upsertStoredMessage(state: AppState, message: StoredMessage): void {
   } else {
     state.messages.push(message);
   }
+  
+  const mergedMsg = state.messages[idx >= 0 ? idx : state.messages.length - 1];
+  if (db) {
+    db.collection("messages").doc(mergedMsg.id).set(mergedMsg, { merge: true }).catch((err: any) => console.error("Firestore sync error:", err));
+  }
 }
 
 async function autoReplyToIncomingMessages(
@@ -897,10 +957,10 @@ async function autoReplyToIncomingMessages(
 
       const idx = state.messages.findIndex((m) => m.id === incomingMessage.id);
       if (idx >= 0) {
-        state.messages[idx] = {
+        upsertStoredMessage(state, {
           ...state.messages[idx],
           ai_response: aiResponse,
-        };
+        });
       }
       state.messages = pruneMessages(state.messages);
       await saveState(statePath, state);
