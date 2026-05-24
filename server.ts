@@ -233,7 +233,7 @@ function clearSessionFromRequest(req: express.Request): void {
 }
 
 function getClientKey(req: express.Request): string {
-  return req.ip || req.socket.remoteAddress || "unknown";
+  return req.ip || req.headers['x-forwarded-for']?.toString() || req.socket?.remoteAddress || "unknown";
 }
 
 function isLoginRateLimited(clientKey: string): { limited: boolean; retryAfterSec: number } {
@@ -1462,14 +1462,9 @@ function buildDailySummaryText(
 }
 
 export const app = express();
-let isAppSetup = false;
 
-async function setupApp() {
-  if (isAppSetup) return;
-  isAppSetup = true;
-
-  console.log("--- Setting up Serverless App ---");
-  const PORT = Number(process.env.PORT) || 3000;
+console.log("--- Setting up Serverless App ---");
+const PORT = Number(process.env.PORT) || 3000;
   const ENV_VERIFY_TOKEN = process.env.VERIFY_TOKEN?.trim();
   const ENV_WHATSAPP_BUSINESS_ID = process.env.WHATSAPP_BUSINESS_ID?.trim();
   const ENV_WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN?.trim();
@@ -1994,12 +1989,6 @@ async function setupApp() {
     });
     app.use(vite.middlewares);
   }
-}
-
-app.use(async (req, res, next) => {
-  await setupApp();
-  next();
-});
 
 if (!process.env.VERCEL) {
   const PORT = Number(process.env.PORT) || 3000;
