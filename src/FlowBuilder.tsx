@@ -18,7 +18,12 @@ import {
   useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Save, MessageSquare, Zap, Bot, MousePointerClick, Loader2 } from 'lucide-react';
+import { 
+  Save, MessageSquare, Zap, Bot, MousePointerClick, Loader2,
+  Image, List as ListIcon, FileText, Store, ShoppingCart, 
+  LayoutTemplate, User, Database, GitBranch, Link, MapPin, Map, 
+  HelpCircle, Tag, Globe, BarChart, ArrowLeft, Edit2
+} from 'lucide-react';
 
 // --- Custom Nodes ---
 
@@ -27,7 +32,7 @@ const TriggerNode = ({ data, id }: any) => {
   return (
     <div className="bg-white border-2 border-emerald-500 rounded-xl shadow-sm min-w-[220px]">
       <div className="bg-emerald-500 px-3 py-2 flex items-center justify-between text-white font-bold text-sm rounded-t-[10px]">
-        <div className="flex items-center gap-2"><Zap size={16} /> Trigger</div>
+        <div className="flex items-center gap-2"><Zap size={16} /> Trigger Keyword</div>
       </div>
       <div className="p-3">
         <label className="block text-xs font-medium text-slate-700 mb-1">Trigger Keyword</label>
@@ -47,9 +52,9 @@ const TriggerNode = ({ data, id }: any) => {
 const MessageNode = ({ data, id }: any) => {
   const { updateNodeData } = useReactFlow();
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm min-w-[220px]">
-      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-slate-400 border-2 border-white" />
-      <div className="bg-slate-50 border-b border-slate-200 px-3 py-2 flex items-center gap-2 text-slate-700 font-bold text-sm rounded-t-xl">
+    <div className="bg-white border-2 border-slate-400 rounded-xl shadow-sm min-w-[220px]">
+      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-slate-500 border-2 border-white" />
+      <div className="bg-slate-500 px-3 py-2 flex items-center gap-2 text-white font-bold text-sm rounded-t-[10px]">
         <MessageSquare size={16} /> Send Message
       </div>
       <div className="p-3">
@@ -61,7 +66,7 @@ const MessageNode = ({ data, id }: any) => {
           placeholder="Type message here..."
         />
       </div>
-      <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-slate-400 border-2 border-white" />
+      <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-slate-500 border-2 border-white" />
     </div>
   );
 };
@@ -88,9 +93,9 @@ const ButtonNode = ({ data, id }: any) => {
   };
 
   return (
-    <div className="bg-white border border-indigo-200 rounded-xl shadow-sm min-w-[240px]">
-      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-indigo-400 border-2 border-white" />
-      <div className="bg-indigo-50 border-b border-indigo-100 px-3 py-2 flex items-center gap-2 text-indigo-700 font-bold text-sm rounded-t-xl">
+    <div className="bg-white border-2 border-indigo-400 rounded-xl shadow-sm min-w-[240px]">
+      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-indigo-500 border-2 border-white" />
+      <div className="bg-indigo-500 px-3 py-2 flex items-center gap-2 text-white font-bold text-sm rounded-t-[10px]">
         <MousePointerClick size={16} /> Interactive Buttons
       </div>
       <div className="p-3 space-y-3">
@@ -149,7 +154,7 @@ const AiHandoffNode = ({ data, id }: any) => {
   return (
     <div className="bg-white border-2 border-amber-400 rounded-xl shadow-sm min-w-[220px]">
       <Handle type="target" position={Position.Top} className="w-3 h-3 bg-amber-500 border-2 border-white" />
-      <div className="bg-amber-400 px-3 py-2 rounded-t-[10px] flex items-center gap-2 text-amber-900 font-bold text-sm">
+      <div className="bg-amber-500 px-3 py-2 rounded-t-[10px] flex items-center gap-2 text-white font-bold text-sm">
         <Bot size={16} /> AI Handoff
       </div>
       <div className="p-3 bg-amber-50 rounded-b-[10px]">
@@ -161,6 +166,78 @@ const AiHandoffNode = ({ data, id }: any) => {
   );
 };
 
+// Generic Placeholder Nodes
+export const genericNodeTypes = [
+  { type: 'mediaButtons', name: 'Media Buttons', icon: Image, color: 'blue' },
+  { type: 'list', name: 'List', icon: ListIcon, color: 'emerald' },
+  { type: 'whatsappForms', name: 'Whatsapp Forms', icon: FileText, color: 'teal' },
+  { type: 'catalogueMessage', name: 'Catalogue Message', icon: Store, color: 'orange' },
+  { type: 'singleProduct', name: 'Single Product', icon: ShoppingCart, color: 'orange' },
+  { type: 'multiProduct', name: 'Multi Product', icon: ShoppingCart, color: 'orange' },
+  { type: 'template', name: 'Template', icon: LayoutTemplate, color: 'purple' },
+  
+  { type: 'requestIntervention', name: 'Request Intervention', icon: User, color: 'rose' },
+  { type: 'metaConversions', name: 'Meta Conversions Api', icon: Database, color: 'blue' },
+  { type: 'condition', name: 'Condition', icon: GitBranch, color: 'indigo' },
+  { type: 'connectFlow', name: 'Connect Flow', icon: Link, color: 'slate' },
+  { type: 'askAddress', name: 'Ask Address', icon: MapPin, color: 'emerald' },
+  { type: 'askLocation', name: 'Ask Location', icon: Map, color: 'emerald' },
+  { type: 'askQuestion', name: 'Ask Question', icon: HelpCircle, color: 'amber' },
+  { type: 'askMedia', name: 'Ask Media', icon: Image, color: 'amber' },
+  { type: 'setAttribute', name: 'Set Attribute', icon: Tag, color: 'slate' },
+  { type: 'addTag', name: 'Add Tag', icon: Tag, color: 'slate' },
+  { type: 'apiRequest', name: 'API Request', icon: Globe, color: 'indigo' },
+  
+  { type: 'easyinsights', name: 'Easyinsights', icon: BarChart, color: 'purple' },
+];
+
+const colorMap: Record<string, string> = {
+  blue: "bg-blue-500 border-blue-400",
+  emerald: "bg-emerald-500 border-emerald-400",
+  teal: "bg-teal-500 border-teal-400",
+  orange: "bg-orange-500 border-orange-400",
+  purple: "bg-purple-500 border-purple-400",
+  rose: "bg-rose-500 border-rose-400",
+  indigo: "bg-indigo-500 border-indigo-400",
+  slate: "bg-slate-500 border-slate-400",
+  amber: "bg-amber-500 border-amber-400",
+};
+
+const handleBgMap: Record<string, string> = {
+  blue: "bg-blue-500",
+  emerald: "bg-emerald-500",
+  teal: "bg-teal-500",
+  orange: "bg-orange-500",
+  purple: "bg-purple-500",
+  rose: "bg-rose-500",
+  indigo: "bg-indigo-500",
+  slate: "bg-slate-500",
+  amber: "bg-amber-500",
+};
+
+const GenericNode = ({ type, id }: any) => {
+  const config = genericNodeTypes.find(t => t.type === type);
+  if (!config) return null;
+  const Icon = config.icon;
+  
+  const className = colorMap[config.color] || colorMap.slate;
+  const borderClass = className.split(' ')[1];
+  const handleBg = handleBgMap[config.color] || handleBgMap.slate;
+
+  return (
+    <div className={`bg-white border-2 rounded-xl shadow-sm min-w-[200px] ${borderClass}`}>
+      <Handle type="target" position={Position.Top} className={`w-3 h-3 border-2 border-white ${handleBg}`} />
+      <div className={`px-3 py-2 flex items-center gap-2 text-white font-bold text-sm rounded-t-[10px] ${handleBg}`}>
+        <Icon size={16} /> {config.name}
+      </div>
+      <div className="p-3 text-sm text-center font-medium text-slate-500 bg-slate-50 rounded-b-[10px]">
+        (Placeholder)
+      </div>
+      <Handle type="source" position={Position.Bottom} className={`w-3 h-3 border-2 border-white ${handleBg}`} />
+    </div>
+  );
+};
+
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
   message: MessageNode,
@@ -168,49 +245,124 @@ const nodeTypes: NodeTypes = {
   aiHandoff: AiHandoffNode,
 };
 
+genericNodeTypes.forEach(config => {
+  nodeTypes[config.type] = (props: any) => <GenericNode {...props} />;
+});
+
 // --- Sidebar Component ---
 
 const Sidebar = () => {
+  const [activeTab, setActiveTab] = useState('BUILDER');
+
   const onDragStart = (event: DragEvent<HTMLDivElement>, nodeType: string) => {
     event.dataTransfer.setData('application/reactflow', nodeType);
     event.dataTransfer.effectAllowed = 'move';
   };
 
+  const renderDraggable = (type: string, name: string, Icon: any) => (
+    <div
+      className="flex flex-col items-center justify-center p-3 border border-slate-200 rounded-xl bg-white hover:border-emerald-500 hover:shadow-sm cursor-grab text-slate-700 transition-all gap-2"
+      onDragStart={(event) => onDragStart(event, type)}
+      draggable
+    >
+      <Icon size={24} className="text-emerald-600" />
+      <span className="text-xs font-medium text-center">{name}</span>
+    </div>
+  );
+
   return (
-    <aside className="w-64 bg-white border-r border-slate-200 p-4 flex flex-col gap-3 overflow-y-auto shrink-0">
-      <div>
-        <h3 className="font-bold text-slate-900 text-sm mb-1">Nodes</h3>
-        <p className="text-xs text-slate-500 mb-2">Drag components to the canvas</p>
+    <aside className="w-[340px] bg-slate-50 border-r border-slate-200 flex flex-col shrink-0">
+      <div className="flex items-center px-4 py-3 bg-white border-b border-slate-200 gap-3 shrink-0">
+         <button className="p-1 hover:bg-slate-100 rounded-lg text-slate-500"><ArrowLeft size={20}/></button>
+         <h2 className="font-medium text-xl flex items-center gap-2">Untitled <button className="inline bg-slate-100 p-1 rounded hover:bg-slate-200 transition-colors"><Edit2 size={14} className="text-slate-600"/></button></h2>
       </div>
-      
-      <div
-        className="border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-2 rounded-xl text-sm font-medium cursor-grab flex items-center gap-2 hover:bg-emerald-100 transition-colors"
-        onDragStart={(event) => onDragStart(event, 'trigger')}
-        draggable
-      >
-        <Zap size={16} /> Trigger Keyword
+
+      <div className="flex border-b border-slate-200 bg-white shrink-0 text-xs font-bold text-slate-500">
+        <button 
+          className={`flex-1 py-3 border-b-[3px] text-center transition-colors ${activeTab === 'BUILDER' ? 'border-emerald-700 text-emerald-800' : 'border-transparent hover:bg-slate-50'}`}
+          onClick={() => setActiveTab('BUILDER')}
+        >
+          BUILDER
+        </button>
+        <button 
+          className={`flex-1 py-3 border-b-[3px] text-center transition-colors ${activeTab === 'KNOWLEDGE BASE' ? 'border-emerald-700 text-emerald-800' : 'border-transparent hover:bg-slate-50'}`}
+          onClick={() => setActiveTab('KNOWLEDGE BASE')}
+        >
+          KNOWLEDGE BASE
+        </button>
+        <button 
+          className={`flex-1 py-3 border-b-[3px] text-center transition-colors ${activeTab === 'TOOL CALLING' ? 'border-emerald-700 text-emerald-800' : 'border-transparent hover:bg-slate-50'}`}
+          onClick={() => setActiveTab('TOOL CALLING')}
+        >
+          TOOL CALLING
+        </button>
       </div>
-      <div
-        className="border border-slate-200 bg-slate-50 text-slate-700 px-3 py-2 rounded-xl text-sm font-medium cursor-grab flex items-center gap-2 hover:bg-slate-100 transition-colors"
-        onDragStart={(event) => onDragStart(event, 'message')}
-        draggable
-      >
-        <MessageSquare size={16} /> Message
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-20 custom-scrollbar">
+        {activeTab === 'BUILDER' && (
+          <>
+            <div>
+              <div className="grid grid-cols-2 gap-3">
+                {renderDraggable('trigger', 'Trigger Keyword', Zap)}
+                {renderDraggable('button', 'Text Buttons', MousePointerClick)}
+                {renderDraggable('mediaButtons', 'Media Buttons', Image)}
+                {renderDraggable('list', 'List', ListIcon)}
+                {renderDraggable('whatsappForms', 'Whatsapp Forms', FileText)}
+                {renderDraggable('catalogueMessage', 'Catalogue Message', Store)}
+                {renderDraggable('singleProduct', 'Single Product', ShoppingCart)}
+                {renderDraggable('multiProduct', 'Multi Product', ShoppingCart)}
+                {renderDraggable('template', 'Template', LayoutTemplate)}
+                {renderDraggable('message', 'Message', MessageSquare)}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-[13px] font-semibold text-slate-700 mb-3 tracking-wide">Actions</h3>
+              <div className="grid grid-cols-2 gap-3">
+                {renderDraggable('requestIntervention', 'Request Intervention', User)}
+                {renderDraggable('metaConversions', 'Meta Conversions Api', Database)}
+                {renderDraggable('condition', 'Condition', GitBranch)}
+                {renderDraggable('connectFlow', 'Connect Flow', Link)}
+                {renderDraggable('askAddress', 'Ask Address', MapPin)}
+                {renderDraggable('askLocation', 'Ask Location', Map)}
+                {renderDraggable('askQuestion', 'Ask Question', HelpCircle)}
+                {renderDraggable('askMedia', 'Ask Media', Image)}
+                {renderDraggable('setAttribute', 'Set Attribute', Tag)}
+                {renderDraggable('addTag', 'Add Tag', Tag)}
+                {renderDraggable('apiRequest', 'API Request', Globe)}
+                {renderDraggable('aiHandoff', 'AI Handoff', Bot)}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-[13px] font-semibold text-slate-700 mb-3 tracking-wide">Integrations</h3>
+              <div className="grid grid-cols-2 gap-3">
+                {renderDraggable('easyinsights', 'Easyinsights', BarChart)}
+              </div>
+            </div>
+          </>
+        )}
+        
+        {activeTab === 'KNOWLEDGE BASE' && (
+           <div className="text-sm text-slate-500 text-center py-10">Knowledge Base coming soon.</div>
+        )}
+
+        {activeTab === 'TOOL CALLING' && (
+           <div className="text-sm text-slate-500 text-center py-10">Tool Calling coming soon.</div>
+        )}
       </div>
-      <div
-        className="border border-indigo-200 bg-indigo-50 text-indigo-700 px-3 py-2 rounded-xl text-sm font-medium cursor-grab flex items-center gap-2 hover:bg-indigo-100 transition-colors"
-        onDragStart={(event) => onDragStart(event, 'button')}
-        draggable
-      >
-        <MousePointerClick size={16} /> Interactive Buttons
-      </div>
-      <div
-        className="border border-amber-200 bg-amber-50 text-amber-800 px-3 py-2 rounded-xl text-sm font-medium cursor-grab flex items-center gap-2 hover:bg-amber-100 transition-colors"
-        onDragStart={(event) => onDragStart(event, 'aiHandoff')}
-        draggable
-      >
-        <Bot size={16} /> AI Handoff
-      </div>
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background-color: #cbd5e1;
+          border-radius: 10px;
+        }
+      `}</style>
     </aside>
   );
 };
@@ -341,11 +493,7 @@ function FlowBuilderContent() {
     <div className="flex h-full w-full bg-slate-50 overflow-hidden text-left">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0" ref={reactFlowWrapper}>
-        <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-10">
-          <div>
-            <h2 className="font-bold text-slate-900 text-sm">Welcome Flow</h2>
-            <p className="text-xs text-slate-500">Auto-responses for initial contact</p>
-          </div>
+        <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-end px-6 shrink-0 z-10 shadow-sm">
           <button
             onClick={onSave}
             disabled={isSaving}
