@@ -8,7 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { readFileSync, existsSync } from "fs";
-import { initializeApp, cert } from "firebase-admin/app";
+import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,7 +16,11 @@ const __dirname = path.dirname(__filename);
 
 let db: any = null;
 try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+  const apps = getApps();
+  if (apps.length > 0) {
+    db = getFirestore();
+    console.log("Firebase Admin already initialized. Reusing existing app.");
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
     const serviceAccount = JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8'));
     initializeApp({ credential: cert(serviceAccount) });
     db = getFirestore();
@@ -362,6 +366,25 @@ async function loadPersistedState(statePath: string): Promise<Partial<AppState>>
 }
 
 async function saveState(statePath: string, state: AppState): Promise<void> {
+  if (!statePath) {
+    if (db && state.settings) {
+      try {
+        await db.collection("settings").doc("global").set(state.settings);
+        if (state.contacts) {
+          await db.collection("settings").doc("contacts").set(state.contacts);
+        }
+        if (state.flows || state.flowStates) {
+          await db.collection("settings").doc("flows").set({
+            flows: state.flows || [],
+            flowStates: state.flowStates || {}
+          });
+        }
+      } catch (e) {
+        console.error("Failed to sync settings to Firestore:", e);
+      }
+    }
+    return;
+  }
   const payload = JSON.stringify(state, null, 2);
   const tmpPath = `${statePath}.tmp`;
   const backupPath = `${statePath}.bak`;
@@ -370,9 +393,13 @@ async function saveState(statePath: string, state: AppState): Promise<void> {
       // Keep queue alive even after a previous write failure.
     })
     .then(async () => {
-      await writeFile(tmpPath, payload, "utf-8");
-      await rename(tmpPath, statePath);
-      await writeFile(backupPath, payload, "utf-8");
+      try {
+        await writeFile(tmpPath, payload, "utf-8");
+        await rename(tmpPath, statePath);
+        await writeFile(backupPath, payload, "utf-8");
+      } catch (e) {
+        console.error("Failed to write state file, continuing in-memory:", e);
+      }
       
       if (db && state.settings) {
         try {
@@ -395,11 +422,6 @@ async function saveState(statePath: string, state: AppState): Promise<void> {
 }
 
 async function initializeState(): Promise<{ state: AppState; statePath: string }> {
-  const dataDir = getDataDir();
-  const statePath = path.join(dataDir, "state.json");
-
-  await mkdir(dataDir, { recursive: true });
-
   const fallbackState: AppState = {
     contacts: {},
     messages: [],
@@ -408,33 +430,47 @@ async function initializeState(): Promise<{ state: AppState; statePath: string }
     flows: [],
     flowStates: {},
   };
-  const persisted = await loadPersistedState(statePath);
+  try {
+    const dataDir = getDataDir();
+    const statePath = path.join(dataDir, "state.json");
 
-  const state: AppState = {
-    contacts:
-      persisted.contacts && typeof persisted.contacts === "object"
-        ? (persisted.contacts as Record<string, ContactConfig>)
-        : fallbackState.contacts,
-    messages: Array.isArray(persisted.messages)
-      ? (persisted.messages as StoredMessage[])
-      : fallbackState.messages,
-    settings: {
-      ...DEFAULT_SETTINGS,
-      ...(persisted.settings ?? {}),
-    },
-    meta:
-      persisted.meta && typeof persisted.meta === "object"
-        ? (persisted.meta as AppState["meta"])
-        : fallbackState.meta,
-    flows: Array.isArray(persisted.flows) ? persisted.flows : fallbackState.flows,
-    flowStates:
-      persisted.flowStates && typeof persisted.flowStates === "object"
-        ? persisted.flowStates
-        : fallbackState.flowStates,
-  };
+    await mkdir(dataDir, { recursive: true });
 
-  await saveState(statePath, state);
-  return { state, statePath };
+    const persisted = await loadPersistedState(statePath);
+
+    const state: AppState = {
+      contacts:
+        persisted.contacts && typeof persisted.contacts === "object"
+          ? (persisted.contacts as Record<string, ContactConfig>)
+          : fallbackState.contacts,
+      messages: Array.isArray(persisted.messages)
+        ? (persisted.messages as StoredMessage[])
+        : fallbackState.messages,
+      settings: {
+        ...DEFAULT_SETTINGS,
+        ...(persisted.settings ?? {}),
+      },
+      meta:
+        persisted.meta && typeof persisted.meta === "object"
+          ? (persisted.meta as AppState["meta"])
+          : fallbackState.meta,
+      flows: Array.isArray(persisted.flows) ? persisted.flows : fallbackState.flows,
+      flowStates:
+        persisted.flowStates && typeof persisted.flowStates === "object"
+          ? persisted.flowStates
+          : fallbackState.flowStates,
+    };
+
+    try {
+      await saveState(statePath, state);
+    } catch (saveErr) {
+      console.error("Warning: Failed to save initial state file:", saveErr);
+    }
+    return { state, statePath };
+  } catch (error) {
+    console.error("CRITICAL: Failed to initialize state, returning fallback in-memory state:", error);
+    return { state: fallbackState, statePath: "" };
+  }
 }
 
 function normalizePhone(phone: string): string {
