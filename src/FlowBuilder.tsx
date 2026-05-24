@@ -369,17 +369,18 @@ const Sidebar = () => {
 
 // --- Main App ---
 
-export default function FlowBuilder() {
+export default function FlowBuilder({ flowId, onBack }: { flowId: string, onBack: () => void }) {
   return (
     <ReactFlowProvider>
-      <FlowBuilderContent />
+      <FlowBuilderContent flowId={flowId} onBack={onBack} />
     </ReactFlowProvider>
   );
 }
 
-function FlowBuilderContent() {
+function FlowBuilderContent({ flowId, onBack }: { flowId: string, onBack: () => void }) {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [flowName, setFlowName] = useState('Untitled Flow');
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
@@ -390,14 +391,16 @@ function FlowBuilderContent() {
       try {
         const response = await fetch('/api/flows');
         if (response.ok) {
-          const data = await response.json();
-          if (data && data.nodes) {
-            setNodes(data.nodes);
-            setEdges(data.edges || []);
+          const flows = await response.json();
+          const currentFlow = (Array.isArray(flows) ? flows : []).find((f: any) => f.id === flowId);
+          if (currentFlow) {
+            setNodes(currentFlow.nodes || []);
+            setEdges(currentFlow.edges || []);
+            setFlowName(currentFlow.name || 'Untitled Flow');
+          } else {
+            setNodes([]);
+            setEdges([]);
           }
-        } else if (response.status === 404) {
-          setNodes([]);
-          setEdges([]);
         }
       } catch (err) {
         console.error('Failed to load flow:', err);
@@ -406,7 +409,7 @@ function FlowBuilderContent() {
       }
     };
     fetchFlow();
-  }, []);
+  }, [flowId]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -463,8 +466,8 @@ function FlowBuilderContent() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: 'default',
-          name: 'Welcome Flow',
+          id: flowId,
+          name: flowName,
           nodes,
           edges,
         }),
@@ -493,7 +496,23 @@ function FlowBuilderContent() {
     <div className="flex h-full w-full bg-slate-50 overflow-hidden text-left">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0" ref={reactFlowWrapper}>
-        <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-end px-6 shrink-0 z-10 shadow-sm">
+        <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-10 shadow-sm">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={onBack}
+              className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors"
+            >
+              &larr; Back to flows
+            </button>
+            <div className="h-6 w-px bg-slate-200" />
+            <input
+              type="text"
+              value={flowName}
+              onChange={(e) => setFlowName(e.target.value)}
+              className="font-bold text-slate-900 text-sm focus:outline-none focus:bg-slate-50 px-2 py-1 rounded transition-colors"
+              placeholder="Flow Name"
+            />
+          </div>
           <button
             onClick={onSave}
             disabled={isSaving}

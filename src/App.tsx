@@ -16,6 +16,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import FlowBuilder from './FlowBuilder';
+import MyFlows from './MyFlows';
 import { AnimatePresence, motion } from 'motion/react';
 import { cn } from './lib/utils';
 import superCollectionsLogo from './assets/super-collections-logo.png';
@@ -149,6 +150,7 @@ export default function App() {
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
   const [isSendingManualReply, setIsSendingManualReply] = useState(false);
   const [isUpdatingContact, setIsUpdatingContact] = useState(false);
+  const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterPhone, setFilterPhone] = useState('');
@@ -1163,7 +1165,13 @@ export default function App() {
                 exit={{ opacity: 0, x: -12 }}
                 className="w-full h-[calc(100vh-140px)] rounded-2xl overflow-hidden border border-slate-200"
               >
-                <FlowBuilder />
+                {!selectedFlowId ? (
+                  <div className="h-full overflow-y-auto bg-slate-50">
+                    <MyFlows onOpenFlow={setSelectedFlowId} />
+                  </div>
+                ) : (
+                  <FlowBuilder flowId={selectedFlowId} onBack={() => setSelectedFlowId(null)} />
+                )}
               </motion.div>
             )}
           </AnimatePresence>

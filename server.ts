@@ -1606,8 +1606,15 @@ async function startServer() {
   app.put("/api/flows", requireAuth, async (req, res) => {
     try {
       const payload = req.body;
+      if (!state.flows) state.flows = [];
+      
       if (!Array.isArray(payload)) {
-        state.flows = [payload];
+        const existingIdx = state.flows.findIndex(f => f.id === payload.id);
+        if (existingIdx >= 0) {
+          state.flows[existingIdx] = payload;
+        } else {
+          state.flows.push(payload);
+        }
       } else {
         state.flows = payload;
       }
@@ -1616,6 +1623,18 @@ async function startServer() {
     } catch (error) {
       console.error("Failed to save flows", error);
       res.status(500).json({ ok: false, error: "Failed to save flows" });
+    }
+  });
+
+  app.delete("/api/flows/:id", requireAuth, async (req, res) => {
+    try {
+      if (!state.flows) state.flows = [];
+      state.flows = state.flows.filter(f => f.id !== req.params.id);
+      await saveState(statePath, state);
+      res.json({ ok: true, flows: state.flows });
+    } catch (error) {
+      console.error("Failed to delete flow", error);
+      res.status(500).json({ ok: false, error: "Failed to delete flow" });
     }
   });
 
